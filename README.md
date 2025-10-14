@@ -14,7 +14,6 @@ This project deploys an automated, event-driven pipeline on AWS using the Server
 
 - AWS CLI configured with appropriate permissions.
 - SAM CLI installed.
-- Docker running (required for `sam build` and local testing).
 - Python 3.9+ installed.
 
 ## 📂 Project Structure
@@ -142,14 +141,86 @@ langdetect
 
 ## 🐍 Application Code
 
-### 1. document_extractor/app.py
+### document_extractor/app.py
 
-- Extracts text from PDF, TXT, and CSV files uploaded to S3.
-- Uses PyPDF2 for PDF extraction and Python’s csv module for CSV parsing.
-- Stores extracted text along with metadata in DynamoDB.
-- Invokes the `documentAnalyzer` Lambda asynchronously after saving.
+```python
+import boto3
+import json
+import io
+import csv
+import PyPDF2 
+import os
+from datetime import datetime
+import uuid
 
-### 2. document_analyzer/app.py
+s3 = boto3.client('s3')
+dynamo = boto3.resource('dynamodb')
+lambda_client = boto3.client('lambda')
+
+DYNAMODB_TABLE = os.environ['DYNAMODB_TABLE']
+ANALYZER_FUNCTION_NAME = os.environ['ANALYZER_FUNCTION_NAME']
+
+def extract_text_from_file(bucket, key):
+    obj = s3.get_object(Bucket=bucket, Key=key)
+    file_content_bytes = obj['Body'].read()
+    
+    size = obj['ContentLength']
+    uploaded_at = obj['LastModified'].isoformat()
+    text = ""
+    
+    if key.lower().endswith('.pdf'):
+        pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_content_bytes))
+        text = " ".join([page.extract_text() or "" for page in pdf_reader.pages])
+    elif key.lower().endswith(('.txt', '.csv')):
+        file_content_str = file_content_bytes.decode('utf-8', errors='ignore')
+        if key.lower().endswith('.csv'):
+            text_data = []
+            csv_io = io.StringIO(file_content_str)
+            reader = csv.reader(csv_io)
+            for row in reader:
+                text_data.append(" ".join(row))
+            text = " ".join(text_data)
+        else:
+            text = file_content_str
+        
+    return text, size, uploaded_at
+
+def lambda_handler(event, context):
+    try:
+        bucket = event['Records'][0]['s3']['bucket']['name']
+        key = event['Records'][0]['s3']['object']['key']
+    except (KeyError, IndexError) as e:
+        return {'status': 'error', 'message': 'Invalid S3 event data'}
+
+    # Extract text and metadata
+    text, size, uploaded_at = extract_text_from_file(bucket, key)
+    
+    # Generate a unique document ID
+    document_id = str(uuid.uuid4())
+    
+    # Store in DynamoDB
+    table = dynamo.Table(DYNAMODB_TABLE)
+    table.put_item(
+        Item={
+            'document_id': document_id,
+            'file_name': key,
+            'text': text,
+            'size': size,
+            'uploaded_at': uploaded_at
+        }
+    )
+    
+    # Invoke Analyzer Lambda asynchronously
+    lambda_client.invoke(
+        FunctionName=ANALYZER_FUNCTION_NAME,
+        InvocationType='Event',
+        Payload=json.dumps({'source_event': 'document_extraction_complete'})
+    )
+    
+    return {'status': 'success', 'document_id': document_id, 'analysis_triggered': True}
+```
+
+### document_analyzer/app.py
 
 ```python
 import boto3
@@ -229,7 +300,7 @@ This downloads dependencies (`PyPDF2`, `langdetect`) and prepares deployment art
 sam deploy --guided
 ```
 
-Fill the interactive prompts:
+Complete the interactive prompts as follows:
 
 | Prompt                     | Example / Description                   |
 |----------------------------|----------------------------------------|
@@ -242,12 +313,13 @@ Fill the interactive prompts:
 
 ### Step 3: Confirm SNS Subscription
 
-Check your email inbox and confirm the subscription message sent by AWS SNS to start receiving notification emails.
+Check your email and click the confirmation link sent by AWS SNS to activate notifications.
 
 ## 🧪 Usage and Testing
 
-- Retrieve the S3 bucket name from the stack outputs.
-- Upload supported document files (`.pdf`, `.csv`, `.txt`) to the bucket.
-- The Extractor Lambda will automatically trigger, extract text, save to DynamoDB, and invoke the Analyzer Lambda.
-- The Analyzer Lambda performs language detection and word frequency analysis on all stored text data.
-- Receive the analytics report immediately via the subscribed email.
+- Obtain the S3 bucket name from the deployed stack outputs.
+- Upload supported files (`.pdf`, `.csv`, `.txt`) into the bucket.
+- The documentExtractor Lambda triggers automatically, extracting and saving text.
+- The documentAnalyzer Lambda then analyzes all documents and sends a report email.
+- Check the provided email address for the Document Analytics Report.
+
