@@ -9,14 +9,6 @@ Parameters:
 
 Resources:
   ############################################################
-  #  S3 Bucket to Upload Documents
-  ############################################################
-  DocumentBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Sub "sam-doc-analytics-bucket-${AWS::AccountId}"
-
-  ############################################################
   #  DynamoDB Table to Store Extracted Text
   ############################################################
   DocumentTable:
@@ -79,7 +71,7 @@ Resources:
       MemorySize: 512
       Policies:
         - S3ReadPolicy:
-            BucketName: !Ref DocumentBucket
+            BucketName: !Sub "sam-doc-analytics-bucket-${AWS::AccountId}"
         - DynamoDBWritePolicy:
             TableName: !Ref DocumentTable
         - LambdaInvokePolicy:
@@ -98,28 +90,29 @@ Resources:
       FunctionName: !Ref DocumentExtractorFunction
       Action: lambda:InvokeFunction
       Principal: s3.amazonaws.com
-      SourceArn: !GetAtt DocumentBucket.Arn
+      SourceAccount: !Ref AWS::AccountId
 
   ############################################################
-  #  S3 Bucket Notification Configuration
+  #  S3 Bucket to Upload Documents and Trigger Extractor
   ############################################################
-  DocumentBucketNotification:
-    Type: AWS::S3::BucketNotification
-    Properties:
-      Bucket: !Ref DocumentBucket
-      LambdaConfigurations:
-        - Event: s3:ObjectCreated:*
-          Filter:
-            S3Key:
-              Rules:
-                - Name: suffix
-                  Value: .pdf
-                - Name: suffix
-                  Value: .txt
-                - Name: suffix
-                  Value: .csv
-          Function: !GetAtt DocumentExtractorFunction.Arn
+  DocumentBucket:
+    Type: AWS::S3::Bucket
     DependsOn: DocumentExtractorPermission
+    Properties:
+      BucketName: !Sub "sam-doc-analytics-bucket-${AWS::AccountId}"
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt DocumentExtractorFunction.Arn
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: .pdf
+                  - Name: suffix
+                    Value: .txt
+                  - Name: suffix
+                    Value: .csv
 
 Outputs:
   S3UploadBucketName:
