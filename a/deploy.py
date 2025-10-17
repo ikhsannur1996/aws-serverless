@@ -1,10 +1,9 @@
 import boto3, zipfile, io, os, time, json
-from getpass import getpass
 
-REGION = "us-east-1"
+REGION = "us-east-1"  # Change to your preferred region
 BASE_NAME = "image-compression"
 
-# Initialize clients
+# AWS clients
 s3_client = boto3.client("s3", region_name=REGION)
 iam_client = boto3.client("iam")
 sns_client = boto3.client("sns")
@@ -24,44 +23,60 @@ sns_topic_name = f"{BASE_NAME}-topic-{timestamp}"
 lambda_name = f"{BASE_NAME}-lambda-{timestamp}"
 lambda_role_name = f"{BASE_NAME}-role-{timestamp}"
 
-print(f"\nCreating S3 buckets...")
-s3_client.create_bucket(Bucket=source_bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
-s3_client.create_bucket(Bucket=target_bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
+# 3. Create S3 buckets (region-aware)
+print("\nCreating S3 buckets...")
+if REGION == "us-east-1":
+    s3_client.create_bucket(Bucket=source_bucket)
+    s3_client.create_bucket(Bucket=target_bucket)
+else:
+    s3_client.create_bucket(
+        Bucket=source_bucket,
+        CreateBucketConfiguration={"LocationConstraint": REGION}
+    )
+    s3_client.create_bucket(
+        Bucket=target_bucket,
+        CreateBucketConfiguration={"LocationConstraint": REGION}
+    )
+print(f"Buckets created: {source_bucket}, {target_bucket}")
 
-# 3. Create SNS topic
+# 4. Create SNS topic
 sns_topic_arn = sns_client.create_topic(Name=sns_topic_name)["TopicArn"]
 for email in emails:
     email = email.strip()
     if email:
         sns_client.subscribe(TopicArn=sns_topic_arn, Protocol="email", Endpoint=email)
-        print(f"Subscribed {email}")
+        print(f"Subscribed {email} to SNS topic")
 
-# 4. Create IAM role for Lambda
+# 5. Create IAM role for Lambda
 trust_policy = {
     "Version": "2012-10-17",
     "Statement": [{"Effect": "Allow", "Principal": {"Service": "lambda.amazonaws.com"}, "Action": "sts:AssumeRole"}]
 }
 role = iam_client.create_role(RoleName=lambda_role_name, AssumeRolePolicyDocument=json.dumps(trust_policy))
-time.sleep(10)
+time.sleep(10)  # wait for role propagation
 iam_client.attach_role_policy(RoleName=lambda_role_name, PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole")
 
-# Inline policy for S3 & SNS
+# Inline policy for S3 & SNS access
 inline_policy = {
     "Version": "2012-10-17",
     "Statement": [
-        {"Effect": "Allow", "Action": ["s3:GetObject","s3:PutObject"], "Resource":[f"arn:aws:s3:::{source_bucket}/*", f"arn:aws:s3:::{target_bucket}/*"]},
-        {"Effect": "Allow", "Action":["sns:Publish"], "Resource":[sns_topic_arn]}
+        {"Effect": "Allow",
+         "Action": ["s3:GetObject","s3:PutObject"],
+         "Resource":[f"arn:aws:s3:::{source_bucket}/*", f"arn:aws:s3:::{target_bucket}/*"]},
+        {"Effect": "Allow",
+         "Action":["sns:Publish"],
+         "Resource":[sns_topic_arn]}
     ]
 }
 iam_client.put_role_policy(RoleName=lambda_role_name, PolicyName=f"{BASE_NAME}-policy", PolicyDocument=json.dumps(inline_policy))
 
-# 5. Package Lambda function (including Pillow)
+# 6. Package Lambda function
 zip_buffer = io.BytesIO()
 with zipfile.ZipFile(zip_buffer, 'w') as zf:
     zf.write("lambda_function.py", arcname="lambda_function.py")
 zip_buffer.seek(0)
 
-# 6. Create Lambda
+# 7. Create Lambda function
 lambda_response = lambda_client.create_function(
     FunctionName=lambda_name,
     Runtime="python3.11",
@@ -72,9 +87,14 @@ lambda_response = lambda_client.create_function(
 )
 lambda_arn = lambda_response["FunctionArn"]
 
-# 7. Add S3 trigger
-notification_configuration = {"LambdaFunctionConfigurations":[{"LambdaFunctionArn":lambda_arn,"Events":["s3:ObjectCreated:Put"]}]}
-s3_client.put_bucket_notification_configuration(Bucket=source_bucket, NotificationConfiguration=notification_configuration)
+# 8. Add S3 trigger to Lambda
+notification_configuration = {
+    "LambdaFunctionConfigurations":[{"LambdaFunctionArn":lambda_arn,"Events":["s3:ObjectCreated:Put"]}]
+}
+s3_client.put_bucket_notification_configuration(
+    Bucket=source_bucket,
+    NotificationConfiguration=notification_configuration
+)
 
 print("\nDeployment Complete!")
 print(f"Source Bucket: {source_bucket}")
