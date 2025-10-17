@@ -1,58 +1,54 @@
-import boto3
 import os
-import io
-import uuid
-from datetime import datetime
-from langdetect import detect, DetectorFactory
+import boto3
+from urllib.parse import unquote_plus
+from collections import Counter
+import string
 
-DetectorFactory.seed = 0
+s3_client = boto3.client('s3')
+dynamodb = boto3.resource('dynamodb')
+sns_client = boto3.client('sns')
+table_name = os.environ['DYNAMODB_TABLE']
+sns_topic_arn = os.environ['SNS_TOPIC_ARN']
 
-s3 = boto3.client('s3')
-dynamo = boto3.resource('dynamodb')
-sns = boto3.client('sns')
-
-DYNAMODB_TABLE = os.environ['DYNAMODB_TABLE']
-TOPIC_ARN = os.environ['TOPIC_ARN']
+table = dynamodb.Table(table_name)
 
 def lambda_handler(event, context):
-    for record in event.get('Records', []):
-        bucket = record['s3']['bucket']['name']
-        key = record['s3']['object']['key']
-
-        # Read file from S3
-        obj = s3.get_object(Bucket=bucket, Key=key)
-        text = obj['Body'].read().decode('utf-8', errors='ignore')
-
-        # Analyze
-        try:
-            language = detect(text)
-        except Exception:
-            language = "unknown"
-        word_count = len(text.split())
-
-        # Save to DynamoDB
-        table = dynamo.Table(DYNAMODB_TABLE)
-        document_id = str(uuid.uuid4())
-        table.put_item(Item={
-            'document_id': document_id,
-            'file_name': key,
-            'language': language,
+    bucket = event['Records'][0]['s3']['bucket']['name']
+    key = unquote_plus(event['Records'][0]['s3']['object']['key'])
+    
+    try:
+        response = s3_client.get_object(Bucket=bucket, Key=key)
+        content = response['Body'].read().decode('utf-8')
+        
+        cleaned_text = content.lower().translate(str.maketrans('', '', string.punctuation))
+        words = cleaned_text.split()
+        word_count = len(words)
+        
+        word_freq = Counter(words)
+        top_words = word_freq.most_common(5)
+        
+        item = {
+            'file_key': key,
             'word_count': word_count,
-            'uploaded_at': datetime.utcnow().isoformat()
-        })
-
-        # Send SNS notification
-        message = (
-            f"✅ Text Document Processed\n"
-            f"File: {key}\n"
-            f"Language: {language}\n"
-            f"Word Count: {word_count}\n"
-            f"Upload Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}"
+            'top_words': dict(top_words)
+        }
+        
+        table.put_item(Item=item)
+        
+        message = f"Text analysis completed for file: {key}\nWord count: {word_count}\nTop words: {dict(top_words)}"
+        sns_client.publish(
+            TopicArn=sns_topic_arn,
+            Message=message,
+            Subject="Text Analysis Notification"
         )
-        sns.publish(
-            TopicArn=TOPIC_ARN,
-            Subject=f"Document Processed: {key}",
-            Message=message
-        )
-
-    return {"status": "success"}
+        
+        return {
+            'statusCode': 200,
+            'body': f'Successfully analyzed {key}, stored results in DynamoDB, and sent notification'
+        }
+    
+    except Exception as e:
+        return {
+            'statusCode': 500,
+            'body': f'Error processing file: {str(e)}'
+        }
