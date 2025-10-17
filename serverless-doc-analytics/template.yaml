@@ -1,0 +1,97 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Sequential Document Analytics System (PDF, TXT, CSV) deployed via AWS SAM.
+
+Parameters:
+  SnsEmail:
+    Type: String
+    Description: Email address to subscribe to the SNS topic for report notifications.
+
+Resources:
+  DocumentBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "sam-doc-analytics-bucket-${AWS::AccountId}"
+
+  DocumentTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      TableName: DocumentTextTable
+      PrimaryKey:
+        Name: document_id
+        Type: String
+
+  SNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: DocumentReportTopic
+
+  SNSEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !Ref SnsEmail
+      Protocol: email
+      TopicArn: !Ref SNSTopic
+
+  DocumentExtractorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: documentExtractor
+      CodeUri: document_extractor/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Timeout: 60
+      MemorySize: 512
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref DocumentBucket
+        - DynamoDBWritePolicy:
+            TableName: !Ref DocumentTable
+        - LambdaInvokePolicy:
+            FunctionName: !Ref DocumentAnalyzerFunction
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref DocumentTable
+          ANALYZER_FUNCTION_NAME: !Ref DocumentAnalyzerFunction
+      Events:
+        S3Event:
+          Type: S3
+          Properties:
+            Bucket: !Ref DocumentBucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: .pdf
+                  - Name: suffix
+                    Value: .txt
+                  - Name: suffix
+                    Value: .csv
+
+  DocumentAnalyzerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: documentAnalyzer
+      CodeUri: document_analyzer/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Timeout: 30
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref DocumentTable
+        - SNSPublishMessagePolicy:
+            TopicArn: !Ref SNSTopic
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref DocumentTable
+          TOPIC_ARN: !Ref SNSTopic
+
+Outputs:
+  S3UploadBucketName:
+    Description: S3 Bucket where documents should be uploaded to start the workflow.
+    Value: !Ref DocumentBucket
+
+  SNSTopicARN:
+    Description: ARN of the SNS Topic. Confirm subscription via email after deployment.
+    Value: !Ref SNSTopic
