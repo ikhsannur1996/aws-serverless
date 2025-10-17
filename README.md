@@ -4,17 +4,17 @@ This project deploys an automated, event-driven pipeline on AWS using the Server
 
 ## ✨ Features
 
-- **File Support:** Processes PDF, TXT, and CSV files.
-- **Automation:** Automatically triggered by S3 object creation.
-- **Sequential Workflow:** The Extractor Lambda invokes the Analyzer Lambda immediately after successful data persistence.
-- **Analytics:** Performs document language detection and word frequency analysis on all extracted text.
-- **Notification:** Sends a final report via Amazon SNS email.
+* **File Support:** Processes PDF, TXT, and CSV files.
+* **Automation:** Automatically triggered by S3 object creation.
+* **Sequential Workflow:** The Extractor Lambda invokes the Analyzer Lambda immediately after successful data persistence.
+* **Analytics:** Performs document language detection and word frequency analysis on all extracted text.
+* **Notification:** Sends a final report via Amazon SNS email.
 
 ## 🛠️ Prerequisites
 
-- AWS CLI configured with appropriate permissions.
-- SAM CLI installed.
-- Python 3.9+ installed.
+* AWS CLI configured with appropriate permissions.
+* SAM CLI installed.
+* Python 3.9+ installed.
 
 ## 📂 Project Structure
 
@@ -126,7 +126,7 @@ Resources:
       Environment:
         Variables:
           DYNAMODB_TABLE: !Ref DocumentTable
-          TOPIC_NAME: !Ref SNSTopic
+          TOPIC_ARN: !Ref SNSTopic
 
 Outputs:
   S3UploadBucketName:
@@ -308,14 +308,14 @@ sam deploy --guided
 
 Complete the interactive prompts as follows:
 
-| Prompt                     | Example / Description                   |
-|----------------------------|----------------------------------------|
-| Stack Name                 | ServerlessDocAnalyticsStack             |
-| AWS Region                 | us-east-1 (or your preferred region)   |
-| Parameter SnsEmail         | Your Email (e.g., user@example.com)    |
-| Confirm changes before deploy | Y                                    |
-| Allow SAM CLI to create IAM roles | Y                              |
-| Save arguments to samconfig.toml | Y                                |
+| Prompt                            | Example / Description                                          |
+| --------------------------------- | -------------------------------------------------------------- |
+| Stack Name                        | ServerlessDocAnalyticsStack                                    |
+| AWS Region                        | us-east-1 (or your preferred region)                           |
+| Parameter SnsEmail                | Your Email (e.g., [user@example.com](mailto:user@example.com)) |
+| Confirm changes before deploy     | Y                                                              |
+| Allow SAM CLI to create IAM roles | Y                                                              |
+| Save arguments to samconfig.toml  | Y                                                              |
 
 ### Step 3: Confirm SNS Subscription
 
@@ -323,9 +323,67 @@ Check your email and click the confirmation link sent by AWS SNS to activate not
 
 ## 🧪 Usage and Testing
 
-- Obtain the S3 bucket name from the deployed stack outputs.
-- Upload supported files (`.pdf`, `.csv`, `.txt`) into the bucket.
-- The documentExtractor Lambda triggers automatically, extracting and saving text.
-- The documentAnalyzer Lambda then analyzes all documents and sends a report email.
-- Check the provided email address for the Document Analytics Report.
+* Obtain the S3 bucket name from the deployed stack outputs.
+* Upload supported files (`.pdf`, `.csv`, `.txt`) into the bucket.
+* The documentExtractor Lambda triggers automatically, extracting and saving text.
+* The documentAnalyzer Lambda then analyzes all documents and sends a report email.
+* Check the provided email address for the Document Analytics Report.
 
+---
+
+## 🧹 Teardown / Cleanup Guide
+
+When you no longer need this system, you can **remove all AWS resources** created by SAM to avoid unnecessary costs.
+
+### Option 1 — Using SAM CLI (Recommended)
+
+Run this command from the root directory:
+
+```bash
+sam delete
+```
+
+You’ll be prompted to confirm deletion:
+
+```
+Are you sure you want to delete the stack ServerlessDocAnalyticsStack in the region us-east-1? [y/N]: y
+```
+
+Once confirmed, SAM will:
+
+* Delete the CloudFormation stack.
+* Remove all related AWS resources:
+
+  * S3 bucket (`sam-doc-analytics-bucket-<AccountId>`)
+  * DynamoDB table (`DocumentTextTable`)
+  * Lambda functions
+  * SNS topic and email subscription
+
+✅ Everything is cleaned up automatically.
+
+---
+
+### Option 2 — Using AWS Console
+
+1. Go to the **AWS CloudFormation Console**.
+2. Find your stack (e.g., `ServerlessDocAnalyticsStack`).
+3. Select it → click **Delete** → confirm.
+4. Wait for the status to show `DELETE_COMPLETE`.
+
+---
+
+### ⚠️ Note on S3 Bucket Cleanup
+
+If your S3 bucket contains uploaded files or has versioning enabled, empty it manually before deletion:
+
+```bash
+aws s3 rm s3://sam-doc-analytics-bucket-<AccountId> --recursive
+```
+
+---
+
+✅ **After deletion**, all AWS resources are safely destroyed, and your account is clean.
+
+---
+
+Would you like me to also include an optional **Makefile** or **shell script** to automate the `build → deploy → delete` cycle? It can make testing much faster.
