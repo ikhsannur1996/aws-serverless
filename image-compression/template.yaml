@@ -2,14 +2,6 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: Compress single or multiple images from S3 and send batch metadata email notifications with pre-signed URLs
 
-Globals:
-  Function:
-    Timeout: 30
-    Runtime: python3.12
-    Environment:
-      Variables:
-        TARGET_BUCKET: !Sub "image-target-bucket-${AWS::AccountId}"
-
 Resources:
   SourceBucket:
     Type: AWS::S3::Bucket
@@ -32,6 +24,12 @@ Resources:
       FunctionName: image-compress-lambda
       Handler: app.lambda_handler
       CodeUri: src/
+      Runtime: python3.9
+      Timeout: 30
+      Environment:
+        Variables:
+          TARGET_BUCKET: !Ref TargetBucket
+          SNS_TOPIC_ARN: !Ref ImageNotificationTopic
       Policies:
         - AWSLambdaBasicExecutionRole
         - S3ReadPolicy:
@@ -40,10 +38,6 @@ Resources:
             BucketName: !Ref TargetBucket
         - SNSPublishMessagePolicy:
             TopicName: !Ref ImageNotificationTopic
-      Environment:
-        Variables:
-          TARGET_BUCKET: !Ref TargetBucket
-          SNS_TOPIC_ARN: !Ref ImageNotificationTopic
       Events:
         S3UploadEvent:
           Type: S3
@@ -54,7 +48,10 @@ Resources:
 Outputs:
   SourceBucketName:
     Value: !Ref SourceBucket
+    Description: Source S3 bucket for uploads
   TargetBucketName:
     Value: !Ref TargetBucket
+    Description: Target S3 bucket for compressed images
   SNSTopicArn:
     Value: !Ref ImageNotificationTopic
+    Description: SNS topic ARN for email notifications
