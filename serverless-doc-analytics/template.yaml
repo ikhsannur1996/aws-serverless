@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: One Lambda Document Processor - Extract, Analyze, Notify (Fixed for S3 Filter Rules)
+Description: One Lambda to process .txt files, store results, and notify via SNS
 
 Parameters:
   SnsEmail:
@@ -9,12 +9,11 @@ Parameters:
 
 Resources:
   # ---------------------
-  # S3 Bucket for Uploads
+  # S3 Bucket (for uploads)
   # ---------------------
   DocumentBucket:
     Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Sub "sam-one-lambda-bucket-${AWS::AccountId}-${AWS::Region}"
+    DeletionPolicy: Delete
 
   # ---------------------
   # DynamoDB Table
@@ -28,7 +27,7 @@ Resources:
         Type: String
 
   # ---------------------
-  # SNS Topic + Email Subscription
+  # SNS Topic and Subscription
   # ---------------------
   SNSTopic:
     Type: AWS::SNS::Topic
@@ -48,11 +47,11 @@ Resources:
   DocumentProcessorFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: documentProcessor
+      FunctionName: TxtDocumentProcessor
       CodeUri: document_processor/
       Handler: app.lambda_handler
       Runtime: python3.9
-      Timeout: 120
+      Timeout: 60
       MemorySize: 512
       Policies:
         - AWSLambdaBasicExecutionRole
@@ -67,16 +66,6 @@ Resources:
           DYNAMODB_TABLE: !Ref DocumentTable
           TOPIC_ARN: !Ref SNSTopic
       Events:
-        PdfUpload:
-          Type: S3
-          Properties:
-            Bucket: !Ref DocumentBucket
-            Events: s3:ObjectCreated:*
-            Filter:
-              S3Key:
-                Rules:
-                  - Name: suffix
-                    Value: .pdf
         TxtUpload:
           Type: S3
           Properties:
@@ -87,24 +76,14 @@ Resources:
                 Rules:
                   - Name: suffix
                     Value: .txt
-        CsvUpload:
-          Type: S3
-          Properties:
-            Bucket: !Ref DocumentBucket
-            Events: s3:ObjectCreated:*
-            Filter:
-              S3Key:
-                Rules:
-                  - Name: suffix
-                    Value: .csv
 
 Outputs:
   UploadBucketName:
-    Description: Upload bucket for documents
+    Description: The S3 bucket where you upload .txt files
     Value: !Ref DocumentBucket
   SNSTopicARN:
     Description: SNS Topic for notifications
     Value: !Ref SNSTopic
   LambdaFunctionName:
-    Description: The name of the processor Lambda
+    Description: Name of the Lambda function
     Value: !Ref DocumentProcessorFunction
