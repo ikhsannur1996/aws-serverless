@@ -5,22 +5,21 @@ sns = boto3.client('sns')
 TOPIC_ARN = os.environ['TOPIC_ARN']
 
 def lambda_handler(event, context):
-    try:
-        record = event['Records'][0]
+    for record in event['Records']:
         bucket = record['s3']['bucket']['name']
         key = record['s3']['object']['key']
-        event_time = record['eventTime']
-    except Exception as e:
-        print("Error parsing event:", e)
-        return {"status": "error", "message": str(e)}
 
-    message = (
-        f"📂 New file uploaded!\n"
-        f"Bucket: {bucket}\n"
-        f"File: {key}\n"
-        f"Upload time: {event_time}\n\n"
-        f"The system will now extract and analyze this file automatically."
-    )
+        message = (
+            f"📤 File Uploaded to S3\n"
+            f"Bucket: {bucket}\n"
+            f"Key: {key}\n\n"
+            f"The document will now be extracted and analyzed automatically."
+        )
 
-    sns.publish(
-       
+        sns.publish(
+            TopicArn=TOPIC_ARN,
+            Subject="📄 New File Uploaded to S3",
+            Message=message
+        )
+
+    return {"status": "upload_notification_sent"}
