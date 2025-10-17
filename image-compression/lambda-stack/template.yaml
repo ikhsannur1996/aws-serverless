@@ -1,0 +1,42 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Lambda with S3 trigger
+
+Parameters:
+  SourceBucketName:
+    Type: String
+  TargetBucketName:
+    Type: String
+  SNSTopicArn:
+    Type: String
+
+Resources:
+  ImageCompressLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      CodeUri: src/
+      Timeout: 30
+      Environment:
+        Variables:
+          TARGET_BUCKET: !Ref TargetBucketName
+          SNS_TOPIC_ARN: !Ref SNSTopicArn
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - S3ReadPolicy:
+            BucketName: !Ref SourceBucketName
+        - S3WritePolicy:
+            BucketName: !Ref TargetBucketName
+        - SNSPublishMessagePolicy:
+            TopicName: !Ref SNSTopicArn
+      Events:
+        S3UploadEvent:
+          Type: S3
+          Properties:
+            Bucket: !Ref SourceBucketName
+            Events: s3:ObjectCreated:*
+
+Outputs:
+  LambdaArn:
+    Value: !GetAtt ImageCompressLambda.Arn
