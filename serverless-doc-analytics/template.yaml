@@ -1,40 +1,25 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Process .txt files, store in DynamoDB, notify via SNS
-
-Parameters:
-  SnsEmail:
-    Type: String
-    Description: Email address to receive notifications
+Description: Process uploaded CSV files and store data in DynamoDB
 
 Resources:
-  DocumentBucket:
+  # S3 Bucket for uploading CSV files
+  CsvBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub "sam-txt-bucket-${AWS::AccountId}-${AWS::Region}"
+      BucketName: !Sub "simple-csv-bucket-${AWS::AccountId}-${AWS::Region}"
 
-  DocumentTable:
+  # DynamoDB Table to store extracted CSV data
+  CsvTable:
     Type: AWS::Serverless::SimpleTable
     Properties:
-      TableName: DocumentTextTable
+      TableName: CsvDataTable
       PrimaryKey:
-        Name: document_id
+        Name: id  # Primary key for the table (e.g., a unique identifier)
         Type: String
 
-  SNSTopic:
-    Type: AWS::SNS::Topic
-    Properties:
-      TopicName: DocumentReportTopic
-
-  SNSEmailSubscription:
-    Type: AWS::SNS::Subscription
-    Properties:
-      Endpoint: !Ref SnsEmail
-      Protocol: email
-      TopicArn: !Ref SNSTopic
-
   # Explicitly define the IAM role for the Lambda function
-  DocumentProcessorFunctionRole:
+  LambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -45,7 +30,7 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       Policies:
-        - PolicyName: LambdaExecutionPolicy
+        - PolicyName: LambdaBasicPolicy
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -55,51 +40,46 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: '*'
-              - Effect: Allow  # DynamoDB access
-                Action:
-                  - dynamodb:PutItem
-                  - dynamodb:GetItem  # Add other actions as needed
-                Resource: !GetAtt DocumentTable.Arn
               - Effect: Allow  # S3 read access
                 Action: s3:GetObject
-                Resource: !Sub "arn:aws:s3:::${DocumentBucket}/*"
-              - Effect: Allow  # SNS publish access
-                Action: sns:Publish
-                Resource: !Ref SNSTopic
+                Resource: !Sub "arn:aws:s3:::${CsvBucket}/*"
+              - Effect: Allow  # DynamoDB write access
+                Action: dynamodb:PutItem
+                Resource: !GetAtt CsvTable.Arn
 
-  DocumentProcessorFunction:
+  # Lambda Function to process CSV files
+  CsvProcessorFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: TxtDocumentProcessor
-      CodeUri: document_processor/
-      Handler: app.lambda_handler
+      FunctionName: CsvProcessor
+      CodeUri: lambda/  # Folder containing your Lambda code (e.g., app.py)
+      Handler: app.lambda_handler  # Entry point in your code
       Runtime: python3.9
-      Timeout: 60
-      MemorySize: 512
-      Role: !GetAtt DocumentProcessorFunctionRole.Arn  # Reference the explicitly defined role
+      Timeout: 60  # 60 seconds timeout
+      MemorySize: 512  # 512 MB memory
+      Role: !GetAtt LambdaExecutionRole.Arn  # Use the explicitly defined role
       Environment:
         Variables:
-          DYNAMODB_TABLE: !Ref DocumentTable
-          TOPIC_ARN: !Ref SNSTopic
+          DYNAMODB_TABLE: !Ref CsvTable  # Reference to DynamoDB table
       Events:
-        TxtUpload:
+        CsvUpload:
           Type: S3
           Properties:
-            Bucket: !Ref DocumentBucket
+            Bucket: !Ref CsvBucket
             Events: s3:ObjectCreated:*
             Filter:
               S3Key:
                 Rules:
                   - Name: suffix
-                    Value: .txt
+                    Value: .csv  # Trigger only on CSV files
     DependsOn:
-      - DocumentBucket  # Ensure the bucket is created first
-      - DocumentProcessorFunctionRole  # Ensure the role is created first
+      - CsvBucket  # Ensure S3 bucket is created first
+      - LambdaExecutionRole  # Ensure IAM role is created first
 
 Outputs:
   UploadBucketName:
-    Description: The S3 bucket where you upload .txt files
-    Value: !Ref DocumentBucket
-  SNSTopicARN:
-    Description: SNS Topic ARN for notifications
-    Value: !Ref SNSTopic
+    Description: The S3 bucket for uploading CSV files
+    Value: !Ref CsvBucket
+  DynamoDBTableName:
+    Description: The DynamoDB table for storing CSV data
+    Value: !Ref CsvTable
