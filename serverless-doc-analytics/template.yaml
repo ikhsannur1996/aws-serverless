@@ -8,11 +8,22 @@ Parameters:
     Description: Email address to receive notifications
 
 Resources:
-  # S3 Bucket for uploading .txt files
+  # S3 Bucket for uploading .txt files with explicit notification configuration
   TextBucket:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub "simple-txt-bucket-${AWS::AccountId}-${AWS::Region}"
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: .txt
+            Function: !GetAtt TextAnalysisFunction.Arn  # Reference to the Lambda function
+    DependsOn:
+      - TextAnalysisFunction  # Ensure Lambda is created before setting up notification
 
   # DynamoDB Table to store text analysis results
   TextAnalysisTable:
@@ -22,7 +33,7 @@ Resources:
       PrimaryKey:
         Name: file_key
         Type: String
-    DependsOn: TextBucket  # Ensure bucket is created first, though this is optional
+    DependsOn: TextBucket  # Ensure bucket is created first
 
   # SNS Topic for notifications
   SNSTopic:
@@ -70,9 +81,9 @@ Resources:
                 Action: sns:Publish
                 Resource: !Ref SNSTopic
     DependsOn:
-      - TextBucket  # Explicitly depend on the bucket
-      - TextAnalysisTable  # Depend on the table
-      - SNSTopic  # Depend on the SNS topic
+      - TextBucket
+      - TextAnalysisTable
+      - SNSTopic
 
   # Lambda Function to process .txt files and perform text analysis
   TextAnalysisFunction:
@@ -89,23 +100,24 @@ Resources:
         Variables:
           DYNAMODB_TABLE: !Ref TextAnalysisTable
           SNS_TOPIC_ARN: !Ref SNSTopic
-      Events:
-        TxtUpload:
-          Type: S3
-          Properties:
-            Bucket: !Ref TextBucket
-            Events: s3:ObjectCreated:*
-            Filter:
-              S3Key:
-                Rules:
-                  - Name: suffix
-                    Value: .txt
     DependsOn:
       - TextBucket
       - TextAnalysisTable
-      - LambdaExecutionRole  # Ensure role is fully created
+      - LambdaExecutionRole
       - SNSTopic
-      - SNSEmailSubscription  # Ensure subscription is set up
+
+  # Explicitly define the Lambda permission for S3 event
+  LambdaS3Permission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref TextAnalysisFunction
+      Principal: s3.amazonaws.com
+      Action: lambda:InvokeFunction
+      SourceArn: !Sub "arn:aws:s3:::${TextBucket}"
+      SourceAccount: !Ref AWS::AccountId
+    DependsOn:
+      - TextAnalysisFunction
+      - TextBucket
 
 Outputs:
   UploadBucketName:
