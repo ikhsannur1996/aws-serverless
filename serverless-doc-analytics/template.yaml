@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Serverless Document Analytics with automatic upload notification and text analysis
+Description: Serverless Document Analytics - S3 Upload -> SNS Notification + Lambda Analyzer
 
 Parameters:
   SnsEmail:
@@ -8,22 +8,72 @@ Parameters:
     Description: Email to receive upload and analysis notifications
 
 Resources:
-  # 1️⃣ S3 Bucket
-  DocumentBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      NotificationConfiguration:
-        TopicConfigurations:
-          - Event: "s3:ObjectCreated:*"
-            Topic: !Ref UploadSNSTopic
-    DependsOn: UploadSNSTopicPolicy
-
-  # 2️⃣ SNS Topic for Upload Notifications
+  ##################################################
+  # 1️⃣ SNS Topic for Upload Notifications
+  ##################################################
   UploadSNSTopic:
     Type: AWS::SNS::Topic
     Properties:
       TopicName: DocumentUploadTopic
 
+  UploadEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !Ref SnsEmail
+      Protocol: email
+      TopicArn: !Ref UploadSNSTopic
+
+  ##################################################
+  # 2️⃣ DynamoDB Table for Document Metadata
+  ##################################################
+  DocumentTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      TableName: DocumentTextTable
+      PrimaryKey:
+        Name: document_id
+        Type: String
+
+  ##################################################
+  # 3️⃣ SNS Topic for Report Notifications
+  ##################################################
+  ReportSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: DocumentReportTopic
+
+  ReportEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !Ref SnsEmail
+      Protocol: email
+      TopicArn: !Ref ReportSNSTopic
+
+  ##################################################
+  # 4️⃣ S3 Bucket (create first, then attach notification)
+  ##################################################
+  DocumentBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "sam-doc-analytics-${AWS::AccountId}-${AWS::Region}"
+
+  ##################################################
+  # 5️⃣ S3 Bucket Notification for SNS (separate resource)
+  ##################################################
+  S3BucketNotification:
+    Type: AWS::S3::BucketNotification
+    Properties:
+      Bucket: !Ref DocumentBucket
+      NotificationConfiguration:
+        TopicConfigurations:
+          - Event: "s3:ObjectCreated:*"
+            Topic: !Ref UploadSNSTopic
+    DependsOn:
+      - UploadSNSTopicPolicy
+
+  ##################################################
+  # 6️⃣ SNS Topic Policy (allow S3 to publish)
+  ##################################################
   UploadSNSTopicPolicy:
     Type: AWS::SNS::TopicPolicy
     Properties:
@@ -39,42 +89,15 @@ Resources:
             Resource: !Ref UploadSNSTopic
             Condition:
               ArnLike:
-                aws:SourceArn: !Sub "arn:aws:s3:::${DocumentBucket}"
+                aws:SourceArn: !Sub "arn:aws:s3:::sam-doc-analytics-${AWS::AccountId}-${AWS::Region}"
 
-  UploadEmailSubscription:
-    Type: AWS::SNS::Subscription
-    Properties:
-      Endpoint: !Ref SnsEmail
-      Protocol: email
-      TopicArn: !Ref UploadSNSTopic
-
-  # 3️⃣ DynamoDB Table
-  DocumentTable:
-    Type: AWS::Serverless::SimpleTable
-    Properties:
-      TableName: DocumentTextTable
-      PrimaryKey:
-        Name: document_id
-        Type: String
-
-  # 4️⃣ SNS Topic for Analysis Reports
-  ReportSNSTopic:
-    Type: AWS::SNS::Topic
-    Properties:
-      TopicName: DocumentReportTopic
-
-  ReportEmailSubscription:
-    Type: AWS::SNS::Subscription
-    Properties:
-      Endpoint: !Ref SnsEmail
-      Protocol: email
-      TopicArn: !Ref ReportSNSTopic
-
-  # 5️⃣ Main Lambda Function (Extractor + Analyzer Combined)
+  ##################################################
+  # 7️⃣ Lambda - Extract + Analyze + Report
+  ##################################################
   DocumentProcessorFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: documentProcessor
+      FunctionName: DocumentProcessorFunction
       CodeUri: document_processor/
       Handler: app.lambda_handler
       Runtime: python3.9
@@ -110,12 +133,12 @@ Resources:
 Outputs:
   S3BucketName:
     Value: !Ref DocumentBucket
-    Description: Upload documents here to trigger analysis
+    Description: S3 bucket for uploading documents
 
   UploadSNSTopicARN:
     Value: !Ref UploadSNSTopic
-    Description: SNS topic that receives upload notifications
+    Description: SNS topic for upload notifications
 
   ReportSNSTopicARN:
     Value: !Ref ReportSNSTopic
-    Description: SNS topic that receives analysis reports
+    Description: SNS topic for analysis reports
