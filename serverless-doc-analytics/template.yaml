@@ -65,7 +65,7 @@ Resources:
                 Resource: !Sub "arn:aws:s3:::${DocumentBucket}/*"
               - Effect: Allow  # SNS publish access
                 Action: sns:Publish
-                Resource: !Ref SNSTopic  # This resolves to the topic ARN
+                Resource: !Ref SNSTopic
 
   DocumentProcessorFunction:
     Type: AWS::Serverless::Function
@@ -92,6 +92,9 @@ Resources:
                 Rules:
                   - Name: suffix
                     Value: .txt
+    DependsOn:
+      - DocumentBucket  # Ensure the bucket is created first
+      - DocumentProcessorFunctionRole  # Ensure the role is created first
 
 Outputs:
   UploadBucketName:
