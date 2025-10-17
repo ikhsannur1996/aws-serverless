@@ -3,104 +3,78 @@ import json
 import io
 import csv
 import PyPDF2
+import os
 import re
 import collections
-from langdetect import detect, DetectorFactory
-import os
-import uuid
 from datetime import datetime
+from langdetect import detect, DetectorFactory
+import uuid
 
-# Initialize AWS clients
 s3 = boto3.client('s3')
 dynamo = boto3.resource('dynamodb')
 sns = boto3.client('sns')
 
-# Environment variables
-DYNAMODB_TABLE = os.environ['DYNAMODB_TABLE']
-TOPIC_ARN = os.environ['TOPIC_ARN']
+DetectorFactory.seed = 0
 
-DetectorFactory.seed = 0  # consistent language detection
+DYNAMODB_TABLE = os.environ['DYNAMODB_TABLE']
+REPORT_TOPIC_ARN = os.environ['REPORT_TOPIC_ARN']
 
 def extract_text(bucket, key):
-    """Extract text from supported file types."""
     obj = s3.get_object(Bucket=bucket, Key=key)
-    content_bytes = obj['Body'].read()
-    text = ""
+    content = obj['Body'].read()
 
     if key.lower().endswith('.pdf'):
-        pdf_reader = PyPDF2.PdfReader(io.BytesIO(content_bytes))
-        text = " ".join([page.extract_text() or "" for page in pdf_reader.pages])
-    elif key.lower().endswith('.txt'):
-        text = content_bytes.decode('utf-8', errors='ignore')
+        pdf = PyPDF2.PdfReader(io.BytesIO(content))
+        text = " ".join([page.extract_text() or "" for page in pdf.pages])
     elif key.lower().endswith('.csv'):
-        csv_str = content_bytes.decode('utf-8', errors='ignore')
-        reader = csv.reader(io.StringIO(csv_str))
-        text = " ".join(" ".join(row) for row in reader)
+        lines = content.decode('utf-8', errors='ignore').splitlines()
+        reader = csv.reader(lines)
+        text = " ".join([" ".join(row) for row in reader])
     else:
-        text = "(Unsupported file type)"
-    return text
+        text = content.decode('utf-8', errors='ignore')
 
+    return text.strip()
 
-def analyze_text(full_text):
-    """Perform simple analytics: language + word frequency."""
-    try:
-        language = detect(full_text)
-    except Exception:
-        language = "unknown"
-
-    words = re.findall(r'\b\w+\b', full_text.lower())
+def analyze_text(text):
+    words = re.findall(r'\b\w+\b', text.lower())
     word_freq = collections.Counter(words)
     top_words = word_freq.most_common(10)
-    summary = "\n".join([f"{w}: {c}" for w, c in top_words])
-    return language, summary
-
+    language = "unknown"
+    try:
+        language = detect(text)
+    except Exception:
+        pass
+    return language, top_words
 
 def lambda_handler(event, context):
-    print("Event received:", json.dumps(event))
-
-    try:
-        record = event['Records'][0]
+    for record in event['Records']:
         bucket = record['s3']['bucket']['name']
         key = record['s3']['object']['key']
-    except (KeyError, IndexError) as e:
-        print("Invalid event structure:", e)
-        return {"status": "error", "reason": "Invalid event structure"}
 
-    # Step 1: Extract text
-    text = extract_text(bucket, key)
-    print(f"Extracted text length: {len(text)}")
+        text = extract_text(bucket, key)
+        language, top_words = analyze_text(text)
+        document_id = str(uuid.uuid4())
 
-    # Step 2: Analyze text
-    language, top_words_summary = analyze_text(text)
-
-    # Step 3: Save to DynamoDB
-    doc_id = str(uuid.uuid4())
-    table = dynamo.Table(DYNAMODB_TABLE)
-    table.put_item(
-        Item={
-            'document_id': doc_id,
+        table = dynamo.Table(DYNAMODB_TABLE)
+        table.put_item(Item={
+            'document_id': document_id,
             'file_name': key,
             'language': language,
-            'text': text[:1000],  # store first 1000 chars to avoid large payloads
-            'created_at': datetime.now().isoformat()
-        }
-    )
+            'top_words': json.dumps(top_words),
+            'uploaded_at': datetime.utcnow().isoformat()
+        })
 
-    # Step 4: Send SNS notification
-    message = (
-        f"📄 Document Analytics Report\n"
-        f"File: {key}\n"
-        f"Language Detected: {language}\n"
-        f"Top 10 Words:\n{top_words_summary}\n"
-        f"Document ID: {doc_id}\n"
-        f"Uploaded at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    )
+        message = (
+            f"✅ Document Processed: {key}\n"
+            f"Language: {language}\n"
+            f"Top 10 Words:\n" +
+            "\n".join([f"{w}: {c}" for w, c in top_words])
+        )
 
-    sns.publish(
-        TopicArn=TOPIC_ARN,
-        Subject=f"Document Processed: {os.path.basename(key)}",
-        Message=message
-    )
+        sns.publish(
+            TopicArn=REPORT_TOPIC_ARN,
+            Subject=f"Document Analysis Report: {key}",
+            Message=message
+        )
 
-    print("SNS notification sent successfully.")
-    return {"status": "success", "file": key, "document_id": doc_id}
+    return {'status': 'success'}
