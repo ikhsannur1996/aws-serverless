@@ -1,389 +1,292 @@
-# Serverless Document Analytics System (SAM)
+# S3 Image Compression with AWS Lambda and SNS Notifications
 
-This project deploys an automated, event-driven pipeline on AWS using the Serverless Application Model (SAM) to process documents and generate analytics reports. The workflow is sequential: **S3 Upload → Extractor → Analyzer → SNS Notification**.
+This project demonstrates a **serverless AWS application** using **SAM** that:
 
-## ✨ Features
+1. Compresses images uploaded to a **Source S3 Bucket**.
+2. Saves compressed images to a **Target S3 Bucket**.
+3. Sends **email notifications via SNS** with **detailed before/after image metadata** and **temporary pre-signed URLs** for public image preview.
+4. Supports **single or multiple file uploads** per event.
 
-* **File Support:** Processes PDF, TXT, and CSV files.
-* **Automation:** Automatically triggered by S3 object creation.
-* **Sequential Workflow:** The Extractor Lambda invokes the Analyzer Lambda immediately after successful data persistence.
-* **Analytics:** Performs document language detection and word frequency analysis on all extracted text.
-* **Notification:** Sends a final report via Amazon SNS email.
+---
 
-## 🛠️ Prerequisites
-
-* AWS CLI configured with appropriate permissions.
-* SAM CLI installed.
-* Python 3.9+ installed.
-
-## 📂 Project Structure
+## 🧱 Project Structure
 
 ```
-serverless-doc-analytics/
-├── template.yaml               # SAM Configuration (Infrastructure as Code)
-├── requirements.txt            # Python dependencies
-├── document_extractor/         # Lambda #1: Extracts and Persists Data
-│   └── app.py
-└── document_analyzer/          # Lambda #2: Analyzes Data and Reports
-    └── app.py
+s3-image-compress-batch/
+├── template.yaml       # AWS SAM template
+├── README.md           # Project documentation
+├── requirements.txt    # Python dependencies
+└── src/
+    └── app.py          # Lambda function code
 ```
 
-## ⚙️ Configuration Files
+---
 
-### template.yaml
+## ⚙ Requirements
 
-```yaml
-AWSTemplateFormatVersion: '2010-09-09'
-Transform: AWS::Serverless-2016-10-31
-Description: Complete Document Analytics System (PDF, TXT, CSV) deployed via AWS SAM
+### Local
 
-Parameters:
-  SnsEmail:
-    Type: String
-    Description: Email address to subscribe to report notifications
+* Python 3.12+
+* AWS SAM CLI
+* AWS CLI configured with credentials
 
-Resources:
-  # S3 bucket to upload documents
-  DocumentBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Sub "sam-doc-analytics-bucket-${AWS::AccountId}"
+### Python Dependencies (`requirements.txt`)
 
-  # DynamoDB table to store processed text
-  DocumentTable:
-    Type: AWS::Serverless::SimpleTable
-    Properties:
-      TableName: DocumentTextTable
-      PrimaryKey:
-        Name: document_id
-        Type: String
-
-  # SNS Topic for notifications
-  SNSTopic:
-    Type: AWS::SNS::Topic
-    Properties:
-      TopicName: DocumentReportTopic
-
-  # Email subscription to SNS Topic
-  SNSEmailSubscription:
-    Type: AWS::SNS::Subscription
-    Properties:
-      Endpoint: !Ref SnsEmail
-      Protocol: email
-      TopicArn: !Ref SNSTopic
-
-  # Lambda function to extract text from documents
-  DocumentExtractorFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: documentExtractor
-      CodeUri: document_extractor/
-      Handler: app.lambda_handler
-      Runtime: python3.9
-      Timeout: 60
-      MemorySize: 512
-      Policies:
-        - S3ReadPolicy:
-            BucketName: !Ref DocumentBucket
-        - DynamoDBWritePolicy:
-            TableName: !Ref DocumentTable
-        - LambdaInvokePolicy:
-            FunctionName: !Ref DocumentAnalyzerFunction
-      Environment:
-        Variables:
-          DYNAMODB_TABLE: !Ref DocumentTable
-          ANALYZER_FUNCTION_NAME: !Ref DocumentAnalyzerFunction
-      Events:
-        S3Event:
-          Type: S3
-          Properties:
-            Bucket: !Ref DocumentBucket
-            Events: s3:ObjectCreated:*
-            Filter:
-              S3Key:
-                Rules:
-                  - Name: suffix
-                    Value: .pdf
-                  - Name: suffix
-                    Value: .txt
-                  - Name: suffix
-                    Value: .csv
-
-  # Lambda function for analyzing documents
-  DocumentAnalyzerFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: documentAnalyzer
-      CodeUri: document_analyzer/
-      Handler: app.lambda_handler
-      Runtime: python3.9
-      Timeout: 30
-      Policies:
-        - DynamoDBReadPolicy:
-            TableName: !Ref DocumentTable
-        - SNSPublishMessagePolicy:
-            TopicName: !Ref SNSTopic
-      Environment:
-        Variables:
-          DYNAMODB_TABLE: !Ref DocumentTable
-          TOPIC_ARN: !Ref SNSTopic
-
-Outputs:
-  S3UploadBucketName:
-    Description: S3 bucket where documents should be uploaded
-    Value: !Ref DocumentBucket
-
-  SNSTopicARN:
-    Description: ARN of the SNS Topic
-    Value: !Ref SNSTopic
+```txt
+boto3
+Pillow
 ```
 
-### requirements.txt
+Install dependencies locally (optional for testing or packaging):
 
-```
-PyPDF2
-langdetect
-```
-
-## 🐍 Application Code
-
-### document_extractor/app.py
-
-```python
-import boto3
-import json
-import io
-import csv
-import PyPDF2 
-import os
-from datetime import datetime
-import uuid
-
-s3 = boto3.client('s3')
-dynamo = boto3.resource('dynamodb')
-lambda_client = boto3.client('lambda')
-
-DYNAMODB_TABLE = os.environ['DYNAMODB_TABLE']
-ANALYZER_FUNCTION_NAME = os.environ['ANALYZER_FUNCTION_NAME']
-
-def extract_text_from_file(bucket, key):
-    obj = s3.get_object(Bucket=bucket, Key=key)
-    file_content_bytes = obj['Body'].read()
-    
-    size = obj['ContentLength']
-    uploaded_at = obj['LastModified'].isoformat()
-    text = ""
-    
-    if key.lower().endswith('.pdf'):
-        pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_content_bytes))
-        text = " ".join([page.extract_text() or "" for page in pdf_reader.pages])
-    elif key.lower().endswith(('.txt', '.csv')):
-        file_content_str = file_content_bytes.decode('utf-8', errors='ignore')
-        if key.lower().endswith('.csv'):
-            text_data = []
-            csv_io = io.StringIO(file_content_str)
-            reader = csv.reader(csv_io)
-            for row in reader:
-                text_data.append(" ".join(row))
-            text = " ".join(text_data)
-        else:
-            text = file_content_str
-        
-    return text, size, uploaded_at
-
-def lambda_handler(event, context):
-    try:
-        bucket = event['Records'][0]['s3']['bucket']['name']
-        key = event['Records'][0]['s3']['object']['key']
-    except (KeyError, IndexError) as e:
-        return {'status': 'error', 'message': 'Invalid S3 event data'}
-
-    # Extract text and metadata
-    text, size, uploaded_at = extract_text_from_file(bucket, key)
-    
-    # Generate a unique document ID
-    document_id = str(uuid.uuid4())
-    
-    # Store in DynamoDB
-    table = dynamo.Table(DYNAMODB_TABLE)
-    table.put_item(
-        Item={
-            'document_id': document_id,
-            'file_name': key,
-            'text': text,
-            'size': size,
-            'uploaded_at': uploaded_at
-        }
-    )
-    
-    # Invoke Analyzer Lambda asynchronously
-    lambda_client.invoke(
-        FunctionName=ANALYZER_FUNCTION_NAME,
-        InvocationType='Event',
-        Payload=json.dumps({'source_event': 'document_extraction_complete'})
-    )
-    
-    return {'status': 'success', 'document_id': document_id, 'analysis_triggered': True}
+```bash
+pip install -r requirements.txt -t src/
 ```
 
-### document_analyzer/app.py
+---
 
-```python
-import boto3
-import re
-import collections
-from langdetect import detect, DetectorFactory
-import os
-from datetime import datetime
+## 🔧 Deployment Instructions
 
-# For consistent language detection results
-DetectorFactory.seed = 0
+1. **Validate SAM template**
 
-dynamo = boto3.resource('dynamodb')
-sns = boto3.client('sns')
-
-DYNAMODB_TABLE = os.environ['DYNAMODB_TABLE']
-TOPIC_ARN = os.environ['TOPIC_ARN']
-
-def perform_analysis(items):
-    # Concatenate all texts from DynamoDB items
-    full_text = " ".join(item['text'] for item in items if 'text' in item)
-    
-    # Detect dominant language of the entire text corpus
-    try:
-        language = detect(full_text)
-    except Exception:
-        language = "unknown"
-    
-    # Tokenize and count word frequency (case-insensitive, words only)
-    words = re.findall(r'\b\w+\b', full_text.lower())
-    word_freq = collections.Counter(words)
-    
-    # Extract top 10 most frequent words
-    top_words = word_freq.most_common(10)
-    top_words_str = "\n".join(f"{word}: {count}" for word, count in top_words)
-    
-    message = (
-        f"Document Analytics Report\n"
-        f"Analysis Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        f"Total Documents Analyzed: {len(items)}\n"
-        f"Detected Language: {language}\n"
-        f"Top 10 Word Frequencies:\n{top_words_str}\n"
-    )
-    return message
-
-def lambda_handler(event, context):
-    table = dynamo.Table(DYNAMODB_TABLE)
-    response = table.scan()
-    items = response.get('Items', [])
-    
-    report_message = perform_analysis(items)
-    
-    sns.publish(
-        TopicArn=TOPIC_ARN,
-        Subject="Document Analytics Report",
-        Message=report_message
-    )
-    
-    return {'status': 'report_sent', 'total_docs': len(items)}
+```bash
+sam validate
 ```
 
-## 🚀 Deployment Guide
-
-From the root `serverless-doc-analytics/` directory:
-
-### Step 1: Build the Project
+2. **Build the SAM project**
 
 ```bash
 sam build
 ```
 
-This downloads dependencies (`PyPDF2`, `langdetect`) and prepares deployment artifacts.
-
-### Step 2: Deploy to AWS
+3. **Deploy the SAM stack**
 
 ```bash
 sam deploy --guided
 ```
 
-Complete the interactive prompts as follows:
+* Provide a **stack name** (e.g., `image-compress-stack`)
+* Accept default permissions
+* SAM will automatically create:
 
-| Prompt                            | Example / Description                                          |
-| --------------------------------- | -------------------------------------------------------------- |
-| Stack Name                        | ServerlessDocAnalyticsStack                                    |
-| AWS Region                        | us-east-1 (or your preferred region)                           |
-| Parameter SnsEmail                | Your Email (e.g., [user@example.com](mailto:user@example.com)) |
-| Confirm changes before deploy     | Y                                                              |
-| Allow SAM CLI to create IAM roles | Y                                                              |
-| Save arguments to samconfig.toml  | Y                                                              |
+  * **Source S3 bucket**
+  * **Target S3 bucket**
+  * **SNS topic**
+  * **Lambda function**
 
-### Step 3: Confirm SNS Subscription
+4. **Subscribe your email to SNS topic**:
 
-Check your email and click the confirmation link sent by AWS SNS to activate notifications.
-
-## 🧪 Usage and Testing
-
-* Obtain the S3 bucket name from the deployed stack outputs.
-* Upload supported files (`.pdf`, `.csv`, `.txt`) into the bucket.
-* The documentExtractor Lambda triggers automatically, extracting and saving text.
-* The documentAnalyzer Lambda then analyzes all documents and sends a report email.
-* Check the provided email address for the Document Analytics Report.
+* Go to **AWS SNS Console → Topics → YourTopic → Create subscription**
+* Protocol: `Email`
+* Endpoint: your email address
+* Confirm subscription in your inbox
 
 ---
 
-## 🧹 Teardown / Cleanup Guide
+## 📄 AWS SAM Template (`template.yaml`)
 
-When you no longer need this system, you can **remove all AWS resources** created by SAM to avoid unnecessary costs.
+```yaml
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Compress single or multiple images from S3 and send batch metadata email notifications with pre-signed URLs
 
-### Option 1 — Using SAM CLI (Recommended)
+Globals:
+  Function:
+    Timeout: 30
+    Runtime: python3.12
+    Environment:
+      Variables:
+        TARGET_BUCKET: !Sub "image-target-bucket-${AWS::AccountId}"
 
-Run this command from the root directory:
+Resources:
+  SourceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "image-source-bucket-${AWS::AccountId}"
 
-```bash
-sam delete
+  TargetBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "image-target-bucket-${AWS::AccountId}"
+
+  ImageNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: Image Upload Notification
+
+  ImageCompressLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: image-compress-lambda
+      Handler: app.lambda_handler
+      CodeUri: src/
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - S3ReadPolicy:
+            BucketName: !Ref SourceBucket
+        - S3WritePolicy:
+            BucketName: !Ref TargetBucket
+        - SNSPublishMessagePolicy:
+            TopicName: !Ref ImageNotificationTopic
+      Environment:
+        Variables:
+          TARGET_BUCKET: !Ref TargetBucket
+          SNS_TOPIC_ARN: !Ref ImageNotificationTopic
+      Events:
+        S3UploadEvent:
+          Type: S3
+          Properties:
+            Bucket: !Ref SourceBucket
+            Events: s3:ObjectCreated:*
+
+Outputs:
+  SourceBucketName:
+    Value: !Ref SourceBucket
+  TargetBucketName:
+    Value: !Ref TargetBucket
+  SNSTopicArn:
+    Value: !Ref ImageNotificationTopic
 ```
 
-You’ll be prompted to confirm deletion:
+---
+
+## 🐍 Lambda Function (`src/app.py`)
+
+```python
+import boto3
+import os
+from io import BytesIO
+from PIL import Image
+
+s3 = boto3.client("s3")
+sns = boto3.client("sns")
+
+TARGET_BUCKET = os.environ['TARGET_BUCKET']
+SNS_TOPIC_ARN = os.environ['SNS_TOPIC_ARN']
+
+def compress_image(image_content):
+    """Compress image and return buffer and metadata"""
+    before_size_kb = len(image_content) / 1024
+    img = Image.open(BytesIO(image_content))
+    before_format = img.format
+    before_width, before_height = img.size
+
+    buffer = BytesIO()
+    if img.format == 'JPEG':
+        img.save(buffer, format='JPEG', quality=60, optimize=True)
+    elif img.format == 'PNG':
+        img.save(buffer, format='PNG', optimize=True)
+    else:
+        img.save(buffer, format=img.format)
+
+    buffer.seek(0)
+    after_size_kb = len(buffer.getvalue()) / 1024
+    after_img = Image.open(buffer)
+    after_format = after_img.format
+    after_width, after_height = after_img.size
+
+    return buffer, {
+        "before_format": before_format,
+        "before_width": before_width,
+        "before_height": before_height,
+        "before_size_kb": before_size_kb,
+        "after_format": after_format,
+        "after_width": after_width,
+        "after_height": after_height,
+        "after_size_kb": after_size_kb
+    }
+
+def generate_presigned_url(bucket, key, expiration=3600):
+    """Generate a pre-signed URL valid for 1 hour (3600 seconds)"""
+    return s3.generate_presigned_url(
+        'get_object',
+        Params={'Bucket': bucket, 'Key': key},
+        ExpiresIn=expiration
+    )
+
+def lambda_handler(event, context):
+    summary_lines = []
+    for record in event.get("Records", []):
+        source_bucket = record['s3']['bucket']['name']
+        key = record['s3']['object']['key']
+
+        # Download image
+        response = s3.get_object(Bucket=source_bucket, Key=key)
+        image_content = response['Body'].read()
+
+        # Compress image and get metadata
+        buffer, meta = compress_image(image_content)
+
+        # Upload compressed image
+        s3.put_object(Bucket=TARGET_BUCKET, Key=key, Body=buffer)
+
+        # Generate pre-signed URL for download
+        presigned_url = generate_presigned_url(TARGET_BUCKET, key)
+
+        # Add to summary
+        summary_lines.append(
+            f"{key}\n"
+            f"{'-'*60}\n"
+            f"{'Original Format':<20}: {meta['before_format']}\n"
+            f"{'Original Size':<20}: {meta['before_size_kb']:.2f} KB\n"
+            f"{'Original Dimensions':<20}: {meta['before_width']}x{meta['before_height']}\n"
+            f"{'Compressed Format':<20}: {meta['after_format']}\n"
+            f"{'Compressed Size':<20}: {meta['after_size_kb']:.2f} KB\n"
+            f"{'Compressed Dimensions':<20}: {meta['after_width']}x{meta['after_height']}\n"
+            f"{'Preview Link':<20}: {presigned_url}\n"
+        )
+
+    # Compose email
+    subject = f"Images Compressed: {len(summary_lines)} file(s)"
+    message = "\n\n".join(summary_lines)
+
+    # Send SNS notification
+    sns.publish(TopicArn=SNS_TOPIC_ARN, Message=message, Subject=subject)
+
+    print(subject)
+    print(message)
+
+    return {"statusCode": 200, "body": "Images compressed and notification with preview links sent."}
+```
+
+---
+
+## 🧪 Example Email Output (with 1-hour preview links)
 
 ```
-Are you sure you want to delete the stack ServerlessDocAnalyticsStack in the region us-east-1? [y/N]: y
+photo1.jpg
+------------------------------------------------------------
+Original Format      : JPEG
+Original Size        : 1450.34 KB
+Original Dimensions  : 1920x1080
+Compressed Format    : JPEG
+Compressed Size      : 512.12 KB
+Compressed Dimensions: 1920x1080
+Preview Link         : https://<bucket>.s3.<region>.amazonaws.com/photo1.jpg?AWSAccessKeyId=...&Expires=...&Signature=...
+
+photo2.png
+------------------------------------------------------------
+Original Format      : PNG
+Original Size        : 120.25 KB
+Original Dimensions  : 800x600
+Compressed Format    : PNG
+Compressed Size      : 95.75 KB
+Compressed Dimensions: 800x600
+Preview Link         : https://<bucket>.s3.<region>.amazonaws.com/photo2.png?AWSAccessKeyId=...&Expires=...&Signature=...
 ```
 
-Once confirmed, SAM will:
+**Email Subject:**
 
-* Delete the CloudFormation stack.
-* Remove all related AWS resources:
-
-  * S3 bucket (`sam-doc-analytics-bucket-<AccountId>`)
-  * DynamoDB table (`DocumentTextTable`)
-  * Lambda functions
-  * SNS topic and email subscription
-
-✅ Everything is cleaned up automatically.
-
----
-
-### Option 2 — Using AWS Console
-
-1. Go to the **AWS CloudFormation Console**.
-2. Find your stack (e.g., `ServerlessDocAnalyticsStack`).
-3. Select it → click **Delete** → confirm.
-4. Wait for the status to show `DELETE_COMPLETE`.
-
----
-
-### ⚠️ Note on S3 Bucket Cleanup
-
-If your S3 bucket contains uploaded files or has versioning enabled, empty it manually before deletion:
-
-```bash
-aws s3 rm s3://sam-doc-analytics-bucket-<AccountId> --recursive
+```
+Images Compressed: 2 file(s)
 ```
 
 ---
 
-✅ **After deletion**, all AWS resources are safely destroyed, and your account is clean.
+This README now contains:
 
----
-
-Would you like me to also include an optional **Makefile** or **shell script** to automate the `build → deploy → delete` cycle? It can make testing much faster.
+* **Full SAM template**
+* **Lambda Python code with 1-hour pre-signed URLs**
+* **requirements.txt info**
+* **Beautiful formatted email output**
+* **Deployment instructions and project structure**
