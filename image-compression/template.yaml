@@ -1,57 +1,18 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Compress single or multiple images from S3 and send batch metadata email notifications with pre-signed URLs
+Description: Root SAM template for nested stacks
 
 Resources:
-  SourceBucket:
-    Type: AWS::S3::Bucket
+  BucketStack:
+    Type: AWS::Serverless::Application
     Properties:
-      BucketName: !Sub "image-source-bucket-${AWS::AccountId}"
+      Location: bucket-stack/template.yaml
 
-  TargetBucket:
-    Type: AWS::S3::Bucket
+  LambdaStack:
+    Type: AWS::Serverless::Application
     Properties:
-      BucketName: !Sub "image-target-bucket-${AWS::AccountId}"
-
-  ImageNotificationTopic:
-    Type: AWS::SNS::Topic
-    Properties:
-      DisplayName: Image Upload Notification
-
-  ImageCompressLambda:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: image-compress-lambda
-      Handler: app.lambda_handler
-      CodeUri: src/
-      Runtime: python3.9
-      Timeout: 30
-      Environment:
-        Variables:
-          TARGET_BUCKET: !Ref TargetBucket
-          SNS_TOPIC_ARN: !Ref ImageNotificationTopic
-      Policies:
-        - AWSLambdaBasicExecutionRole
-        - S3ReadPolicy:
-            BucketName: !Ref SourceBucket
-        - S3WritePolicy:
-            BucketName: !Ref TargetBucket
-        - SNSPublishMessagePolicy:
-            TopicName: !Ref ImageNotificationTopic
-      Events:
-        S3UploadEvent:
-          Type: S3
-          Properties:
-            Bucket: !Ref SourceBucket
-            Events: s3:ObjectCreated:*
-
-Outputs:
-  SourceBucketName:
-    Value: !Ref SourceBucket
-    Description: Source S3 bucket for uploads
-  TargetBucketName:
-    Value: !Ref TargetBucket
-    Description: Target S3 bucket for compressed images
-  SNSTopicArn:
-    Value: !Ref ImageNotificationTopic
-    Description: SNS topic ARN for email notifications
+      Location: lambda-stack/template.yaml
+      Parameters:
+        SourceBucketName: !GetAtt BucketStack.Outputs.SourceBucketName
+        TargetBucketName: !GetAtt BucketStack.Outputs.TargetBucketName
+        SNSTopicArn: !GetAtt BucketStack.Outputs.SNSTopicArn
