@@ -1,201 +1,178 @@
 import boto3
 import os
+import zipfile
 import shutil
 import subprocess
 import sys
 import time
 import json
 
-# -----------------------------
-# Configuration
-# -----------------------------
 REGION = "us-east-1"
-BASE_NAME = "image-compression"
+BASE_NAME = "csv-to-json"
+LAMBDA_FILENAME = "lambda_csv_to_json.py"
 
 # -----------------------------
-# Initialize AWS clients
+# Step 0: Initialize AWS clients
 # -----------------------------
-s3 = boto3.client("s3", region_name=REGION)
-iam = boto3.client("iam")
-sns = boto3.client("sns")
-lam = boto3.client("lambda", region_name=REGION)
-sts = boto3.client("sts")
+print("Initializing AWS clients...")
+s3_client = boto3.client("s3", region_name=REGION)
+iam_client = boto3.client("iam")
+sns_client = boto3.client("sns")
+lambda_client = boto3.client("lambda", region_name=REGION)
+sts_client = boto3.client("sts")
 
-ACCOUNT_ID = sts.get_caller_identity()["Account"]
+ACCOUNT_ID = sts_client.get_caller_identity()["Account"]
+print(f"AWS Account: {ACCOUNT_ID}\n")
+
+# -----------------------------
+# Step 1: Prompt for SNS subscribers
+# -----------------------------
+emails = input("Enter comma-separated email addresses for SNS notifications: ").split(",")
+
+# -----------------------------
+# Step 2: Generate unique resource names
+# -----------------------------
 timestamp = int(time.time())
-print(f"Deployment timestamp: {timestamp}, Account: {ACCOUNT_ID}")
-
-# -----------------------------
-# Prompt for SNS emails
-# -----------------------------
-emails = input("Enter comma-separated SNS emails: ").split(",")
-
-# -----------------------------
-# Resource names
-# -----------------------------
 source_bucket = f"{BASE_NAME}-source-{timestamp}"
 target_bucket = f"{BASE_NAME}-target-{timestamp}"
 sns_topic_name = f"{BASE_NAME}-topic-{timestamp}"
 lambda_name = f"{BASE_NAME}-lambda-{timestamp}"
 lambda_role_name = f"{BASE_NAME}-role-{timestamp}"
 
+print("Resource names:")
+print(f"Source Bucket: {source_bucket}")
+print(f"Target Bucket: {target_bucket}")
+print(f"SNS Topic: {sns_topic_name}")
+print(f"Lambda Function: {lambda_name}")
+print(f"IAM Role: {lambda_role_name}\n")
+
 # -----------------------------
-# 1. Create S3 buckets
+# Step 3: Create S3 buckets
 # -----------------------------
-for b in [source_bucket, target_bucket]:
+print("Creating S3 buckets...")
+for bucket in [source_bucket, target_bucket]:
     if REGION == "us-east-1":
-        s3.create_bucket(Bucket=b)
+        s3_client.create_bucket(Bucket=bucket)
     else:
-        s3.create_bucket(Bucket=b, CreateBucketConfiguration={"LocationConstraint": REGION})
-    print(f"Created bucket: {b}")
+        s3_client.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
+    print(f"Created bucket: {bucket}")
+print("S3 buckets created.\n")
 
 # -----------------------------
-# 2. Create SNS topic and subscribe emails
+# Step 4: Create SNS topic and subscribe emails
 # -----------------------------
-sns_arn = sns.create_topic(Name=sns_topic_name)["TopicArn"]
-for e in emails:
-    e = e.strip()
-    if e:
-        sns.subscribe(TopicArn=sns_arn, Protocol="email", Endpoint=e)
-        print(f"Subscribed {e}")
-print(f"SNS Topic ARN: {sns_arn}")
+print("Creating SNS topic...")
+sns_topic_arn = sns_client.create_topic(Name=sns_topic_name)["TopicArn"]
+for email in emails:
+    email = email.strip()
+    if email:
+        sns_client.subscribe(TopicArn=sns_topic_arn, Protocol="email", Endpoint=email)
+        print(f"Subscribed {email} to SNS topic")
+print("SNS topic created.\n")
 
 # -----------------------------
-# 3. Create IAM role for Lambda
+# Step 5: Create IAM role for Lambda
 # -----------------------------
+print("Creating IAM role for Lambda...")
 trust_policy = {
-    "Version":"2012-10-17",
-    "Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]
+    "Version": "2012-10-17",
+    "Statement": [{"Effect": "Allow", "Principal": {"Service": "lambda.amazonaws.com"}, "Action": "sts:AssumeRole"}]
 }
-role = iam.create_role(RoleName=lambda_role_name, AssumeRolePolicyDocument=json.dumps(trust_policy))
-time.sleep(10)  # Wait for role propagation
-iam.attach_role_policy(RoleName=lambda_role_name, PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole")
+role = iam_client.create_role(RoleName=lambda_role_name, AssumeRolePolicyDocument=json.dumps(trust_policy))
+time.sleep(10)
+iam_client.attach_role_policy(RoleName=lambda_role_name, PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole")
 
 inline_policy = {
-    "Version":"2012-10-17",
-    "Statement":[
-        {"Effect":"Allow","Action":["s3:GetObject","s3:PutObject"],"Resource":[f"arn:aws:s3:::{source_bucket}/*", f"arn:aws:s3:::{target_bucket}/*"]},
-        {"Effect":"Allow","Action":["sns:Publish"],"Resource":[sns_arn]}
+    "Version": "2012-10-17",
+    "Statement": [
+        {"Effect": "Allow",
+         "Action": ["s3:GetObject","s3:PutObject"],
+         "Resource":[f"arn:aws:s3:::{source_bucket}/*", f"arn:aws:s3:::{target_bucket}/*"]},
+        {"Effect": "Allow",
+         "Action":["sns:Publish"],
+         "Resource":[sns_topic_arn]}
     ]
 }
-iam.put_role_policy(RoleName=lambda_role_name, PolicyName=f"{BASE_NAME}-policy", PolicyDocument=json.dumps(inline_policy))
-print(f"IAM role {lambda_role_name} created with policies.")
+iam_client.put_role_policy(RoleName=lambda_role_name, PolicyName=f"{BASE_NAME}-policy", PolicyDocument=json.dumps(inline_policy))
+print("IAM role created and policies attached.\n")
 
 # -----------------------------
-# 4. Prepare Lambda package
+# Step 6: Prepare Lambda package
 # -----------------------------
+print("Packaging Lambda function...")
 package_dir = "lambda_package"
 if os.path.exists(package_dir):
     shutil.rmtree(package_dir)
 os.makedirs(package_dir)
 
-# Write lambda_function.py
-lambda_code = f"""
-import boto3
-import io
-import os
-import imageio.v3 as iio
+# Copy Lambda code
+shutil.copy(LAMBDA_FILENAME, package_dir)
 
-TARGET_BUCKET = os.environ['TARGET_BUCKET']
-SNS_TOPIC_ARN = os.environ['SNS_TOPIC_ARN']
+# Create zip package
+zip_path = "lambda_package.zip"
+shutil.make_archive("lambda_package", 'zip', package_dir)
+print("Lambda package created.\n")
 
-s3 = boto3.client("s3")
-sns = boto3.client("sns")
-
-def lambda_handler(event, context):
-    summary_lines = []
-
-    for record in event.get("Records", []):
-        source_bucket = record['s3']['bucket']['name']
-        key = record['s3']['object']['key']
-        try:
-            response = s3.get_object(Bucket=source_bucket, Key=key)
-            img_data = response['Body'].read()
-            img = iio.imread(img_data)
-
-            out_buffer = io.BytesIO()
-            ext = key.split('.')[-1].lower()
-            if ext in ["jpg","jpeg"]:
-                iio.imwrite(out_buffer, img, format="JPEG", quality=60)
-            elif ext == "png":
-                iio.imwrite(out_buffer, img, format="PNG", compression=6)
-            else:
-                iio.imwrite(out_buffer, img, format=ext.upper())
-
-            out_buffer.seek(0)
-            s3.put_object(Bucket=TARGET_BUCKET, Key=key, Body=out_buffer)
-            summary_lines.append(f"{{key}}: compressed successfully")
-        except Exception as e:
-            summary_lines.append(f"{{key}}: error - {{e}}")
-
-    if summary_lines:
-        sns.publish(
-            TopicArn=SNS_TOPIC_ARN,
-            Subject=f"Image Compression Summary ({{len(summary_lines)}} file(s))",
-            Message="\\n".join(summary_lines)
-        )
-
-    return {{"statusCode":200,"body":"Images processed and notification sent."}}
-"""
-
-with open(os.path.join(package_dir,"lambda_function.py"), "w") as f:
-    f.write(lambda_code)
-
-# Install dependencies
-subprocess.check_call([sys.executable,"-m","pip","install","boto3","imageio","-t", package_dir])
-
-# Zip package
-shutil.make_archive("lambda_package","zip",package_dir)
-with open("lambda_package.zip","rb") as f:
+# -----------------------------
+# Step 7: Create Lambda function
+# -----------------------------
+with open(zip_path, 'rb') as f:
     zip_bytes = f.read()
-shutil.rmtree(package_dir)
-os.remove("lambda_package.zip")
 
-# -----------------------------
-# 5. Create Lambda function
-# -----------------------------
-lambda_resp = lam.create_function(
+lambda_response = lambda_client.create_function(
     FunctionName=lambda_name,
     Runtime="python3.11",
     Role=f"arn:aws:iam::{ACCOUNT_ID}:role/{lambda_role_name}",
-    Handler="lambda_function.lambda_handler",
+    Handler=f"{LAMBDA_FILENAME.rsplit('.',1)[0]}.lambda_handler",
     Code={"ZipFile": zip_bytes},
-    Environment={"Variables":{"TARGET_BUCKET":target_bucket,"SNS_TOPIC_ARN":sns_arn}}
+    Environment={"Variables":{"TARGET_BUCKET":target_bucket,"SNS_TOPIC_ARN":sns_topic_arn}}
 )
-lambda_arn = lambda_resp["FunctionArn"]
-print(f"Lambda function {lambda_name} created: {lambda_arn}")
+lambda_arn = lambda_response["FunctionArn"]
+print(f"Lambda function created: {lambda_arn}\n")
 
 # -----------------------------
-# 6. Add S3 trigger
+# Step 8: Wait for Lambda propagation
 # -----------------------------
-time.sleep(10)  # Wait for Lambda propagation
+print("Waiting 10 seconds for Lambda propagation...")
+time.sleep(10)
 
-lam.add_permission(
+# -----------------------------
+# Step 9: Add S3 invoke permission
+# -----------------------------
+lambda_client.add_permission(
     FunctionName=lambda_name,
     StatementId=f"s3-invoke-{timestamp}",
     Action="lambda:InvokeFunction",
     Principal="s3.amazonaws.com",
     SourceArn=f"arn:aws:s3:::{source_bucket}"
 )
+print("S3 permission added to Lambda.\n")
 
-time.sleep(5)
-
-s3.put_bucket_notification_configuration(
+# -----------------------------
+# Step 10: Add S3 trigger
+# -----------------------------
+notification_configuration = {
+    "LambdaFunctionConfigurations":[{"LambdaFunctionArn":lambda_arn,"Events":["s3:ObjectCreated:*"]}]
+}
+s3_client.put_bucket_notification_configuration(
     Bucket=source_bucket,
-    NotificationConfiguration={
-        "LambdaFunctionConfigurations":[
-            {"LambdaFunctionArn": lambda_arn, "Events": ["s3:ObjectCreated:Put"]}
-        ]
-    }
+    NotificationConfiguration=notification_configuration
 )
-print(f"S3 trigger added for bucket {source_bucket}")
+print("S3 trigger configured.\n")
 
 # -----------------------------
-# Deployment complete
+# Step 11: Cleanup local files
 # -----------------------------
-print("=== DEPLOYMENT COMPLETE ===")
+shutil.rmtree(package_dir)
+os.remove(zip_path)
+print("Local temporary files cleaned up.\n")
+
+# -----------------------------
+# Step 12: Deployment Complete
+# -----------------------------
+print("Deployment complete!")
 print(f"Source Bucket: {source_bucket}")
 print(f"Target Bucket: {target_bucket}")
-print(f"SNS Topic ARN: {sns_arn}")
+print(f"SNS Topic ARN: {sns_topic_arn}")
 print(f"Lambda Function ARN: {lambda_arn}")
 print("Please confirm your SNS subscriptions via email!")
