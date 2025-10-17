@@ -37,7 +37,7 @@ Resources:
       Protocol: email
       TopicArn: !Ref SNSTopic
 
-  # Lambda function for analyzing documents (declared first so extractor can reference it)
+  # Lambda function for analyzing documents
   DocumentAnalyzerFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -70,8 +70,12 @@ Resources:
       MemorySize: 512
       Policies:
         - AWSLambdaBasicExecutionRole
-        - S3ReadPolicy:
-            BucketName: !Ref DocumentBucket
+        # ✅ FIX: Removed direct reference to DocumentBucket to prevent circular dependency
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource: "arn:aws:s3:::*"
         - DynamoDBWritePolicy:
             TableName: !Ref DocumentTable
         - LambdaInvokePolicy:
