@@ -22,6 +22,7 @@ Resources:
       PrimaryKey:
         Name: file_key
         Type: String
+    DependsOn: TextBucket  # Ensure bucket is created first, though this is optional
 
   # SNS Topic for notifications
   SNSTopic:
@@ -68,13 +69,17 @@ Resources:
               - Effect: Allow  # SNS publish access
                 Action: sns:Publish
                 Resource: !Ref SNSTopic
+    DependsOn:
+      - TextBucket  # Explicitly depend on the bucket
+      - TextAnalysisTable  # Depend on the table
+      - SNSTopic  # Depend on the SNS topic
 
   # Lambda Function to process .txt files and perform text analysis
   TextAnalysisFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: TextAnalysisProcessor
-      CodeUri: document_processor/  # Updated to match your folder name
+      CodeUri: document_processor/
       Handler: app.lambda_handler
       Runtime: python3.9
       Timeout: 60
@@ -97,8 +102,10 @@ Resources:
                     Value: .txt
     DependsOn:
       - TextBucket
-      - LambdaExecutionRole
+      - TextAnalysisTable
+      - LambdaExecutionRole  # Ensure role is fully created
       - SNSTopic
+      - SNSEmailSubscription  # Ensure subscription is set up
 
 Outputs:
   UploadBucketName:
