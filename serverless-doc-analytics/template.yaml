@@ -8,13 +8,11 @@ Parameters:
     Description: Email address to subscribe to report notifications
 
 Resources:
-  # S3 bucket to upload documents
   DocumentBucket:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub "sam-doc-analytics-bucket-${AWS::AccountId}"
 
-  # DynamoDB table to store processed text
   DocumentTable:
     Type: AWS::Serverless::SimpleTable
     Properties:
@@ -23,13 +21,11 @@ Resources:
         Name: document_id
         Type: String
 
-  # SNS Topic for notifications
   SNSTopic:
     Type: AWS::SNS::Topic
     Properties:
       TopicName: DocumentReportTopic
 
-  # Email subscription to SNS Topic
   SNSEmailSubscription:
     Type: AWS::SNS::Subscription
     Properties:
@@ -37,7 +33,6 @@ Resources:
       Protocol: email
       TopicArn: !Ref SNSTopic
 
-  # Lambda function to extract text from documents
   DocumentExtractorFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -59,7 +54,7 @@ Resources:
           DYNAMODB_TABLE: !Ref DocumentTable
           ANALYZER_FUNCTION_NAME: !Ref DocumentAnalyzerFunction
       Events:
-        S3Event:
+        S3PdfEvent:
           Type: S3
           Properties:
             Bucket: !Ref DocumentBucket
@@ -69,12 +64,27 @@ Resources:
                 Rules:
                   - Name: suffix
                     Value: .pdf
+        S3TxtEvent:
+          Type: S3
+          Properties:
+            Bucket: !Ref DocumentBucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
                   - Name: suffix
                     Value: .txt
+        S3CsvEvent:
+          Type: S3
+          Properties:
+            Bucket: !Ref DocumentBucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
                   - Name: suffix
                     Value: .csv
 
-  # Lambda function for analyzing documents
   DocumentAnalyzerFunction:
     Type: AWS::Serverless::Function
     Properties:
