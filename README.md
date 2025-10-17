@@ -35,19 +35,21 @@ serverless-doc-analytics/
 ```yaml
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Sequential Document Analytics System (PDF, TXT, CSV) deployed via AWS SAM.
+Description: Complete Document Analytics System (PDF, TXT, CSV) deployed via AWS SAM
 
 Parameters:
   SnsEmail:
     Type: String
-    Description: Email address to subscribe to the SNS topic for report notifications.
+    Description: Email address to subscribe to report notifications
 
 Resources:
+  # S3 bucket to upload documents
   DocumentBucket:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub "sam-doc-analytics-bucket-${AWS::AccountId}"
 
+  # DynamoDB table to store processed text
   DocumentTable:
     Type: AWS::Serverless::SimpleTable
     Properties:
@@ -56,11 +58,13 @@ Resources:
         Name: document_id
         Type: String
 
+  # SNS Topic for notifications
   SNSTopic:
     Type: AWS::SNS::Topic
     Properties:
       TopicName: DocumentReportTopic
 
+  # Email subscription to SNS Topic
   SNSEmailSubscription:
     Type: AWS::SNS::Subscription
     Properties:
@@ -68,6 +72,7 @@ Resources:
       Protocol: email
       TopicArn: !Ref SNSTopic
 
+  # Lambda function to extract text from documents
   DocumentExtractorFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -104,6 +109,7 @@ Resources:
                   - Name: suffix
                     Value: .csv
 
+  # Lambda function for analyzing documents
   DocumentAnalyzerFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -116,19 +122,19 @@ Resources:
         - DynamoDBReadPolicy:
             TableName: !Ref DocumentTable
         - SNSPublishMessagePolicy:
-            TopicArn: !Ref SNSTopic
+            TopicName: !Ref SNSTopic
       Environment:
         Variables:
           DYNAMODB_TABLE: !Ref DocumentTable
-          TOPIC_ARN: !Ref SNSTopic
+          TOPIC_NAME: !Ref SNSTopic
 
 Outputs:
   S3UploadBucketName:
-    Description: S3 Bucket where documents should be uploaded to start the workflow.
+    Description: S3 bucket where documents should be uploaded
     Value: !Ref DocumentBucket
 
   SNSTopicARN:
-    Description: ARN of the SNS Topic. Confirm subscription via email after deployment.
+    Description: ARN of the SNS Topic
     Value: !Ref SNSTopic
 ```
 
