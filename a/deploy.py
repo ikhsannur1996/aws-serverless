@@ -2,7 +2,7 @@ import boto3, os, time, json, subprocess, shutil, sys
 
 REGION = "us-east-1"
 BASE_NAME = "image-compression"
-EMAILS = ["youremail@example.com"]  # Add subscriber emails
+EMAILS = ["ikhsannur1996@gmail.com"]  # Add subscriber emails
 
 # AWS clients
 s3 = boto3.client("s3", region_name=REGION)
