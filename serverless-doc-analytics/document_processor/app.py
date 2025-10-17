@@ -1,87 +1,76 @@
 import boto3
-import json
+import os
 import io
 import csv
 import PyPDF2
-import os
-import re
-import collections
-from datetime import datetime
-from langdetect import detect, DetectorFactory
 import uuid
+from langdetect import detect, DetectorFactory
+from datetime import datetime
+
+DetectorFactory.seed = 0
 
 s3 = boto3.client('s3')
 dynamo = boto3.resource('dynamodb')
 sns = boto3.client('sns')
 
-DetectorFactory.seed = 0
-
 DYNAMODB_TABLE = os.environ['DYNAMODB_TABLE']
-REPORT_TOPIC_ARN = os.environ['REPORT_TOPIC_ARN']
+TOPIC_ARN = os.environ['TOPIC_ARN']
 
 def extract_text(bucket, key):
-    """Extracts text from PDF, TXT, or CSV"""
     obj = s3.get_object(Bucket=bucket, Key=key)
-    content = obj['Body'].read()
+    data = obj['Body'].read()
+    text = ""
 
     if key.lower().endswith('.pdf'):
-        pdf = PyPDF2.PdfReader(io.BytesIO(content))
-        text = " ".join([page.extract_text() or "" for page in pdf.pages])
+        reader = PyPDF2.PdfReader(io.BytesIO(data))
+        text = " ".join([page.extract_text() or "" for page in reader.pages])
     elif key.lower().endswith('.csv'):
-        lines = content.decode('utf-8', errors='ignore').splitlines()
-        reader = csv.reader(lines)
+        csv_io = io.StringIO(data.decode('utf-8', errors='ignore'))
+        reader = csv.reader(csv_io)
         text = " ".join([" ".join(row) for row in reader])
-    else:
-        text = content.decode('utf-8', errors='ignore')
+    elif key.lower().endswith('.txt'):
+        text = data.decode('utf-8', errors='ignore')
 
     return text.strip()
 
 def analyze_text(text):
-    """Performs simple language detection and word frequency analysis"""
-    words = re.findall(r'\b\w+\b', text.lower())
-    word_freq = collections.Counter(words)
-    top_words = word_freq.most_common(10)
-
-    language = "unknown"
     try:
-        language = detect(text)
+        lang = detect(text) if text else "unknown"
     except Exception:
-        pass
-
-    return language, top_words
+        lang = "unknown"
+    word_count = len(text.split())
+    return lang, word_count
 
 def lambda_handler(event, context):
-    """Triggered automatically when file is uploaded to S3"""
-    for record in event['Records']:
+    for record in event.get('Records', []):
         bucket = record['s3']['bucket']['name']
         key = record['s3']['object']['key']
 
-        print(f"Processing file: {key} from bucket: {bucket}")
-
         text = extract_text(bucket, key)
-        language, top_words = analyze_text(text)
-        document_id = str(uuid.uuid4())
+        lang, word_count = analyze_text(text)
 
         table = dynamo.Table(DYNAMODB_TABLE)
+        document_id = str(uuid.uuid4())
         table.put_item(Item={
             'document_id': document_id,
             'file_name': key,
-            'language': language,
-            'top_words': json.dumps(top_words),
+            'language': lang,
+            'word_count': word_count,
             'uploaded_at': datetime.utcnow().isoformat()
         })
 
         message = (
-            f"✅ Document Processed: {key}\n"
-            f"Language: {language}\n"
-            f"Top 10 Words:\n" +
-            "\n".join([f"{w}: {c}" for w, c in top_words])
+            f"📄 Document Processed Successfully\n"
+            f"File: {key}\n"
+            f"Language: {lang}\n"
+            f"Word Count: {word_count}\n"
+            f"Upload Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}"
         )
 
         sns.publish(
-            TopicArn=REPORT_TOPIC_ARN,
-            Subject=f"Document Analysis Report: {key}",
+            TopicArn=TOPIC_ARN,
+            Subject=f"Document Processed: {key}",
             Message=message
         )
 
-    return {'status': 'success'}
+    return {"status": "success"}
