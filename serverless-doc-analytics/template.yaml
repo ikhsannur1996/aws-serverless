@@ -13,7 +13,6 @@ Resources:
   ###########################################################
   DocumentBucket:
     Type: AWS::S3::Bucket
-    Properties: {}
 
   ###########################################################
   #  DynamoDB Table - Store extracted text
@@ -148,13 +147,14 @@ Resources:
           DYNAMODB_TABLE: !Ref DocumentTable
           TOPIC_ARN: !Ref SNSTopic
 
+Outputs:
   ###########################################################
-  #  Outputs
+  #  Stack Outputs
   ###########################################################
   S3UploadBucketName:
     Description: S3 bucket where documents should be uploaded
     Value: !Ref DocumentBucket
 
   SNSTopicARN:
-    Description: ARN of the SNS Topic
+    Description: ARN of the SNS Topic for notifications
     Value: !Ref SNSTopic
