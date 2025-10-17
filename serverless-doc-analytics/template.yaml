@@ -1,20 +1,25 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: One Lambda Document Processor - Extract, Analyze, Notify
+Description: One Lambda Document Processor - Extract, Analyze, Notify (No Circular Dependency)
 
 Parameters:
   SnsEmail:
     Type: String
-    Description: Email address for notifications
+    Description: Email address to receive notifications
 
 Resources:
-  # Single S3 bucket for document uploads
+  # ---------------------
+  # S3 Bucket for Uploads
+  # ---------------------
   DocumentBucket:
     Type: AWS::S3::Bucket
     Properties:
+      NotificationConfiguration: {}  # leave empty - SAM will manage event
       BucketName: !Sub "sam-one-lambda-bucket-${AWS::AccountId}"
 
-  # DynamoDB table
+  # ---------------------
+  # DynamoDB Table
+  # ---------------------
   DocumentTable:
     Type: AWS::Serverless::SimpleTable
     Properties:
@@ -23,13 +28,14 @@ Resources:
         Name: document_id
         Type: String
 
-  # SNS Topic
+  # ---------------------
+  # SNS Topic + Email Subscription
+  # ---------------------
   SNSTopic:
     Type: AWS::SNS::Topic
     Properties:
       TopicName: DocumentReportTopic
 
-  # SNS Email Subscription
   SNSEmailSubscription:
     Type: AWS::SNS::Subscription
     Properties:
@@ -37,7 +43,9 @@ Resources:
       Protocol: email
       TopicArn: !Ref SNSTopic
 
-  # Single Lambda function
+  # ---------------------
+  # Lambda Function
+  # ---------------------
   DocumentProcessorFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -52,7 +60,7 @@ Resources:
         - DynamoDBCrudPolicy:
             TableName: !Ref DocumentTable
         - S3ReadPolicy:
-            BucketName: !Ref DocumentBucket
+            BucketName: !Sub "sam-one-lambda-bucket-${AWS::AccountId}"
         - SNSPublishMessagePolicy:
             TopicName: !Ref SNSTopic
       Environment:
@@ -60,7 +68,7 @@ Resources:
           DYNAMODB_TABLE: !Ref DocumentTable
           TOPIC_ARN: !Ref SNSTopic
       Events:
-        FileUpload:
+        S3UploadEvent:
           Type: S3
           Properties:
             Bucket: !Ref DocumentBucket
@@ -76,9 +84,12 @@ Resources:
                     Value: .csv
 
 Outputs:
-  S3UploadBucketName:
+  UploadBucketName:
     Description: Upload bucket for documents
     Value: !Ref DocumentBucket
   SNSTopicARN:
     Description: SNS Topic for notifications
     Value: !Ref SNSTopic
+  LambdaFunctionName:
+    Description: The name of the processor Lambda
+    Value: !Ref DocumentProcessorFunction
