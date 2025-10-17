@@ -8,11 +8,17 @@ Parameters:
     Description: Email address to subscribe to report notifications
 
 Resources:
+  ############################################################
+  #  S3 Bucket to Upload Documents
+  ############################################################
   DocumentBucket:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub "sam-doc-analytics-bucket-${AWS::AccountId}"
 
+  ############################################################
+  #  DynamoDB Table to Store Extracted Text
+  ############################################################
   DocumentTable:
     Type: AWS::Serverless::SimpleTable
     Properties:
@@ -21,11 +27,15 @@ Resources:
         Name: document_id
         Type: String
 
+  ############################################################
+  #  SNS Topic for Notifications
+  ############################################################
   SNSTopic:
     Type: AWS::SNS::Topic
     Properties:
       TopicName: DocumentReportTopic
 
+  # Email subscription for SNS Topic
   SNSEmailSubscription:
     Type: AWS::SNS::Subscription
     Properties:
@@ -33,6 +43,31 @@ Resources:
       Protocol: email
       TopicArn: !Ref SNSTopic
 
+  ############################################################
+  #  Lambda Function: Document Analyzer
+  ############################################################
+  DocumentAnalyzerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: documentAnalyzer
+      CodeUri: document_analyzer/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Timeout: 30
+      MemorySize: 512
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref DocumentTable
+        - SNSPublishMessagePolicy:
+            TopicName: !Ref SNSTopic
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref DocumentTable
+          TOPIC_NAME: !Ref SNSTopic
+
+  ############################################################
+  #  Lambda Function: Document Extractor (Triggered by S3)
+  ############################################################
   DocumentExtractorFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -53,55 +88,38 @@ Resources:
         Variables:
           DYNAMODB_TABLE: !Ref DocumentTable
           ANALYZER_FUNCTION_NAME: !Ref DocumentAnalyzerFunction
-      Events:
-        S3PdfEvent:
-          Type: S3
-          Properties:
-            Bucket: !Ref DocumentBucket
-            Events: s3:ObjectCreated:*
-            Filter:
-              S3Key:
-                Rules:
-                  - Name: suffix
-                    Value: .pdf
-        S3TxtEvent:
-          Type: S3
-          Properties:
-            Bucket: !Ref DocumentBucket
-            Events: s3:ObjectCreated:*
-            Filter:
-              S3Key:
-                Rules:
-                  - Name: suffix
-                    Value: .txt
-        S3CsvEvent:
-          Type: S3
-          Properties:
-            Bucket: !Ref DocumentBucket
-            Events: s3:ObjectCreated:*
-            Filter:
-              S3Key:
-                Rules:
-                  - Name: suffix
-                    Value: .csv
 
-  DocumentAnalyzerFunction:
-    Type: AWS::Serverless::Function
+  ############################################################
+  #  Lambda Invoke Permission for S3
+  ############################################################
+  DocumentExtractorPermission:
+    Type: AWS::Lambda::Permission
     Properties:
-      FunctionName: documentAnalyzer
-      CodeUri: document_analyzer/
-      Handler: app.lambda_handler
-      Runtime: python3.9
-      Timeout: 30
-      Policies:
-        - DynamoDBReadPolicy:
-            TableName: !Ref DocumentTable
-        - SNSPublishMessagePolicy:
-            TopicName: !Ref SNSTopic
-      Environment:
-        Variables:
-          DYNAMODB_TABLE: !Ref DocumentTable
-          TOPIC_NAME: !Ref SNSTopic
+      FunctionName: !Ref DocumentExtractorFunction
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !GetAtt DocumentBucket.Arn
+
+  ############################################################
+  #  S3 Bucket Notification Configuration
+  ############################################################
+  DocumentBucketNotification:
+    Type: AWS::S3::BucketNotification
+    Properties:
+      Bucket: !Ref DocumentBucket
+      LambdaConfigurations:
+        - Event: s3:ObjectCreated:*
+          Filter:
+            S3Key:
+              Rules:
+                - Name: suffix
+                  Value: .pdf
+                - Name: suffix
+                  Value: .txt
+                - Name: suffix
+                  Value: .csv
+          Function: !GetAtt DocumentExtractorFunction.Arn
+    DependsOn: DocumentExtractorPermission
 
 Outputs:
   S3UploadBucketName:
@@ -111,3 +129,11 @@ Outputs:
   SNSTopicARN:
     Description: ARN of the SNS Topic
     Value: !Ref SNSTopic
+
+  DocumentExtractorFunctionName:
+    Description: Name of the Lambda function that extracts text from documents
+    Value: !Ref DocumentExtractorFunction
+
+  DocumentAnalyzerFunctionName:
+    Description: Name of the Lambda function that analyzes processed documents
+    Value: !Ref DocumentAnalyzerFunction
