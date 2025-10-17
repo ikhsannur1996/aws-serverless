@@ -8,13 +8,16 @@ Parameters:
     Description: Email address to subscribe to report notifications
 
 Resources:
-  # S3 bucket to upload documents
+  ###########################################################
+  #  S3 Bucket - Upload here to trigger pipeline
+  ###########################################################
   DocumentBucket:
     Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Sub "sam-doc-analytics-bucket-${AWS::AccountId}"
+    Properties: {}
 
-  # DynamoDB table to store processed text
+  ###########################################################
+  #  DynamoDB Table - Store extracted text
+  ###########################################################
   DocumentTable:
     Type: AWS::Serverless::SimpleTable
     Properties:
@@ -23,13 +26,14 @@ Resources:
         Name: document_id
         Type: String
 
-  # SNS Topic for notifications
+  ###########################################################
+  #  SNS Topic + Email Subscription
+  ###########################################################
   SNSTopic:
     Type: AWS::SNS::Topic
     Properties:
       TopicName: DocumentReportTopic
 
-  # Email subscription to SNS Topic
   SNSEmailSubscription:
     Type: AWS::SNS::Subscription
     Properties:
@@ -37,53 +41,25 @@ Resources:
       Protocol: email
       TopicArn: !Ref SNSTopic
 
-  # Lambda function for analyzing documents
-  DocumentAnalyzerFunction:
+  ###########################################################
+  #  Lambda: Upload Notifier (triggered by file upload)
+  ###########################################################
+  UploadNotifierFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: documentAnalyzer
-      CodeUri: document_analyzer/
+      FunctionName: uploadNotifier
+      CodeUri: upload_notifier/
       Handler: app.lambda_handler
       Runtime: python3.9
-      Timeout: 30
-      MemorySize: 256
+      Timeout: 15
+      MemorySize: 128
       Policies:
         - AWSLambdaBasicExecutionRole
-        - DynamoDBReadPolicy:
-            TableName: !Ref DocumentTable
         - SNSPublishMessagePolicy:
             TopicName: !Ref SNSTopic
       Environment:
         Variables:
-          DYNAMODB_TABLE: !Ref DocumentTable
           TOPIC_ARN: !Ref SNSTopic
-
-  # Lambda function to extract text from documents
-  DocumentExtractorFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: documentExtractor
-      CodeUri: document_extractor/
-      Handler: app.lambda_handler
-      Runtime: python3.9
-      Timeout: 60
-      MemorySize: 512
-      Policies:
-        - AWSLambdaBasicExecutionRole
-        # ✅ FIX: Removed direct reference to DocumentBucket to prevent circular dependency
-        - Statement:
-            - Effect: Allow
-              Action:
-                - s3:GetObject
-              Resource: "arn:aws:s3:::*"
-        - DynamoDBWritePolicy:
-            TableName: !Ref DocumentTable
-        - LambdaInvokePolicy:
-            FunctionName: !Ref DocumentAnalyzerFunction
-      Environment:
-        Variables:
-          DYNAMODB_TABLE: !Ref DocumentTable
-          ANALYZER_FUNCTION_NAME: !Ref DocumentAnalyzerFunction
       Events:
         PdfUpload:
           Type: S3
@@ -116,7 +92,65 @@ Resources:
                   - Name: suffix
                     Value: .csv
 
-Outputs:
+  ###########################################################
+  #  Lambda: Document Extractor
+  ###########################################################
+  DocumentExtractorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: documentExtractor
+      CodeUri: document_extractor/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Timeout: 60
+      MemorySize: 512
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource: "arn:aws:s3:::*"
+        - DynamoDBWritePolicy:
+            TableName: !Ref DocumentTable
+        - LambdaInvokePolicy:
+            FunctionName: !Ref DocumentAnalyzerFunction
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref DocumentTable
+          ANALYZER_FUNCTION_NAME: !Ref DocumentAnalyzerFunction
+      Events:
+        ExtractorTrigger:
+          Type: SNS
+          Properties:
+            Topic: !Ref SNSTopic
+
+  ###########################################################
+  #  Lambda: Document Analyzer
+  ###########################################################
+  DocumentAnalyzerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: documentAnalyzer
+      CodeUri: document_analyzer/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Timeout: 30
+      MemorySize: 256
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBReadPolicy:
+            TableName: !Ref DocumentTable
+        - SNSPublishMessagePolicy:
+            TopicName: !Ref SNSTopic
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref DocumentTable
+          TOPIC_ARN: !Ref SNSTopic
+
+  ###########################################################
+  #  Outputs
+  ###########################################################
   S3UploadBucketName:
     Description: S3 bucket where documents should be uploaded
     Value: !Ref DocumentBucket
