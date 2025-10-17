@@ -57,7 +57,7 @@ trust_policy = {
     "Statement": [{"Effect": "Allow", "Principal": {"Service": "lambda.amazonaws.com"}, "Action": "sts:AssumeRole"}]
 }
 role = iam_client.create_role(RoleName=lambda_role_name, AssumeRolePolicyDocument=json.dumps(trust_policy))
-time.sleep(10)  # wait for propagation
+time.sleep(10)  # wait for role propagation
 iam_client.attach_role_policy(RoleName=lambda_role_name, PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole")
 
 # Inline policy for S3 and SNS access
@@ -96,7 +96,13 @@ lambda_response = lambda_client.create_function(
 lambda_arn = lambda_response["FunctionArn"]
 
 # -----------------------------
-# 8. Add permission for S3 to invoke Lambda
+# 8. Wait for Lambda propagation
+# -----------------------------
+print("Waiting 10 seconds for Lambda propagation...")
+time.sleep(10)
+
+# -----------------------------
+# 9. Add permission for S3 to invoke Lambda
 # -----------------------------
 lambda_client.add_permission(
     FunctionName=lambda_name,
@@ -106,8 +112,11 @@ lambda_client.add_permission(
     SourceArn=f"arn:aws:s3:::{source_bucket}"
 )
 
+# Small extra wait
+time.sleep(5)
+
 # -----------------------------
-# 9. Add S3 trigger to Lambda
+# 10. Add S3 trigger to Lambda
 # -----------------------------
 notification_configuration = {
     "LambdaFunctionConfigurations":[{"LambdaFunctionArn":lambda_arn,"Events":["s3:ObjectCreated:Put"]}]
