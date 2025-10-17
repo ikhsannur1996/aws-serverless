@@ -63,7 +63,10 @@ print(f"SNS Topic ARN: {sns_arn}")
 # -----------------------------
 # 3. Create IAM role for Lambda
 # -----------------------------
-trust_policy = {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}
+trust_policy = {
+    "Version":"2012-10-17",
+    "Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]
+}
 role = iam.create_role(RoleName=lambda_role_name, AssumeRolePolicyDocument=json.dumps(trust_policy))
 time.sleep(10)
 iam.attach_role_policy(RoleName=lambda_role_name, PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole")
@@ -165,8 +168,11 @@ lambda_arn = lambda_resp["FunctionArn"]
 print(f"Lambda function {lambda_name} created: {lambda_arn}")
 
 # -----------------------------
-# 6. Add S3 trigger
+# 6. Add S3 trigger with propagation wait
 # -----------------------------
+print("Waiting 10s for Lambda propagation...")
+time.sleep(10)
+
 lam.add_permission(
     FunctionName=lambda_name,
     StatementId=f"s3-invoke-{timestamp}",
@@ -175,9 +181,15 @@ lam.add_permission(
     SourceArn=f"arn:aws:s3:::{source_bucket}"
 )
 
+time.sleep(5)  # wait for permission propagation
+
 s3.put_bucket_notification_configuration(
     Bucket=source_bucket,
-    NotificationConfiguration={"LambdaFunctionConfigurations":[{"LambdaFunctionArn":lambda_arn,"Events":["s3:ObjectCreated:Put"]}]}
+    NotificationConfiguration={
+        "LambdaFunctionConfigurations":[
+            {"LambdaFunctionArn": lambda_arn, "Events": ["s3:ObjectCreated:Put"]}
+        ]
+    }
 )
 print(f"S3 trigger added for bucket {source_bucket}")
 
