@@ -33,6 +33,40 @@ Resources:
       Protocol: email
       TopicArn: !Ref SNSTopic
 
+  # Explicitly define the IAM role for the Lambda function
+  DocumentProcessorFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow  # Basic logging
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow  # DynamoDB access
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem  # Add other actions as needed
+                Resource: !GetAtt DocumentTable.Arn
+              - Effect: Allow  # S3 read access
+                Action: s3:GetObject
+                Resource: !Sub "arn:aws:s3:::${DocumentBucket}/*"
+              - Effect: Allow  # SNS publish access
+                Action: sns:Publish
+                Resource: !Ref SNSTopic  # This resolves to the topic ARN
+
   DocumentProcessorFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -42,14 +76,7 @@ Resources:
       Runtime: python3.9
       Timeout: 60
       MemorySize: 512
-      Policies:
-        - AWSLambdaBasicExecutionRole
-        - DynamoDBCrudPolicy:
-            TableName: !Ref DocumentTable
-        - S3ReadPolicy:
-            BucketName: !Ref DocumentBucket
-        - SNSPublishMessagePolicy:
-            TopicName: !Ref SNSTopic
+      Role: !GetAtt DocumentProcessorFunctionRole.Arn  # Reference the explicitly defined role
       Environment:
         Variables:
           DYNAMODB_TABLE: !Ref DocumentTable
