@@ -68,7 +68,7 @@ trust_policy = {
     "Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]
 }
 role = iam.create_role(RoleName=lambda_role_name, AssumeRolePolicyDocument=json.dumps(trust_policy))
-time.sleep(10)
+time.sleep(10)  # Wait for role propagation
 iam.attach_role_policy(RoleName=lambda_role_name, PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole")
 
 inline_policy = {
@@ -82,7 +82,7 @@ iam.put_role_policy(RoleName=lambda_role_name, PolicyName=f"{BASE_NAME}-policy",
 print(f"IAM role {lambda_role_name} created with policies.")
 
 # -----------------------------
-# 4. Prepare Lambda function
+# 4. Prepare Lambda package
 # -----------------------------
 package_dir = "lambda_package"
 if os.path.exists(package_dir):
@@ -115,7 +115,7 @@ def lambda_handler(event, context):
 
             out_buffer = io.BytesIO()
             ext = key.split('.')[-1].lower()
-            if ext in ["jpg", "jpeg"]:
+            if ext in ["jpg","jpeg"]:
                 iio.imwrite(out_buffer, img, format="JPEG", quality=60)
             elif ext == "png":
                 iio.imwrite(out_buffer, img, format="PNG", compression=6)
@@ -125,10 +125,8 @@ def lambda_handler(event, context):
             out_buffer.seek(0)
             s3.put_object(Bucket=TARGET_BUCKET, Key=key, Body=out_buffer)
             summary_lines.append(f"{{key}}: compressed successfully")
-            print(f"Compressed {{key}} -> {{TARGET_BUCKET}}")
         except Exception as e:
             summary_lines.append(f"{{key}}: error - {{e}}")
-            print(f"Error processing {{key}}: {{e}}")
 
     if summary_lines:
         sns.publish(
@@ -137,7 +135,7 @@ def lambda_handler(event, context):
             Message="\\n".join(summary_lines)
         )
 
-    return {{"statusCode": 200, "body": "Images processed and notification sent."}}
+    return {{"statusCode":200,"body":"Images processed and notification sent."}}
 """
 
 with open(os.path.join(package_dir,"lambda_function.py"), "w") as f:
@@ -168,10 +166,9 @@ lambda_arn = lambda_resp["FunctionArn"]
 print(f"Lambda function {lambda_name} created: {lambda_arn}")
 
 # -----------------------------
-# 6. Add S3 trigger with propagation wait
+# 6. Add S3 trigger
 # -----------------------------
-print("Waiting 10s for Lambda propagation...")
-time.sleep(10)
+time.sleep(10)  # Wait for Lambda propagation
 
 lam.add_permission(
     FunctionName=lambda_name,
@@ -181,7 +178,7 @@ lam.add_permission(
     SourceArn=f"arn:aws:s3:::{source_bucket}"
 )
 
-time.sleep(5)  # wait for permission propagation
+time.sleep(5)
 
 s3.put_bucket_notification_configuration(
     Bucket=source_bucket,
