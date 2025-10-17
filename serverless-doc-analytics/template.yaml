@@ -1,19 +1,23 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: One Lambda to process .txt files, store results, and notify via SNS
+Description: One Lambda to process .txt files, store results in DynamoDB, and notify via SNS
 
 Parameters:
   SnsEmail:
     Type: String
     Description: Email address to receive notifications
+  UploadBucketName:
+    Type: String
+    Description: Unique name for the S3 bucket (must be globally unique)
 
 Resources:
   # ---------------------
-  # S3 Bucket (for uploads)
+  # S3 Bucket (parameterized)
   # ---------------------
   DocumentBucket:
     Type: AWS::S3::Bucket
-    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Ref UploadBucketName
 
   # ---------------------
   # DynamoDB Table
@@ -27,7 +31,7 @@ Resources:
         Type: String
 
   # ---------------------
-  # SNS Topic and Subscription
+  # SNS Topic + Email Subscription
   # ---------------------
   SNSTopic:
     Type: AWS::SNS::Topic
@@ -58,7 +62,7 @@ Resources:
         - DynamoDBCrudPolicy:
             TableName: !Ref DocumentTable
         - S3ReadPolicy:
-            BucketName: !Ref DocumentBucket
+            BucketName: !Ref UploadBucketName
         - SNSPublishMessagePolicy:
             TopicName: !Ref SNSTopic
       Environment:
@@ -69,7 +73,7 @@ Resources:
         TxtUpload:
           Type: S3
           Properties:
-            Bucket: !Ref DocumentBucket
+            Bucket: !Ref UploadBucketName
             Events: s3:ObjectCreated:*
             Filter:
               S3Key:
@@ -82,8 +86,8 @@ Outputs:
     Description: The S3 bucket where you upload .txt files
     Value: !Ref DocumentBucket
   SNSTopicARN:
-    Description: SNS Topic for notifications
+    Description: SNS Topic ARN for notifications
     Value: !Ref SNSTopic
   LambdaFunctionName:
-    Description: Name of the Lambda function
+    Description: The name of the Lambda function
     Value: !Ref DocumentProcessorFunction
