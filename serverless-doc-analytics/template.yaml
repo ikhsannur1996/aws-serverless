@@ -108,12 +108,25 @@ Resources:
                 Rules:
                   - Name: suffix
                     Value: .pdf
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt DocumentExtractorFunction.Arn
+            Filter:
+              S3Key:
+                Rules:
                   - Name: suffix
                     Value: .txt
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt DocumentExtractorFunction.Arn
+            Filter:
+              S3Key:
+                Rules:
                   - Name: suffix
                     Value: .csv
 
 Outputs:
+  ############################################################
+  # Stack Outputs
+  ############################################################
   S3UploadBucketName:
     Description: S3 bucket where documents should be uploaded
     Value: !Ref DocumentBucket
