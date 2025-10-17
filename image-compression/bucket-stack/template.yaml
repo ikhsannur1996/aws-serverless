@@ -1,0 +1,29 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: S3 buckets and SNS topic
+
+Resources:
+  SourceBucket:
+    Type: AWS::S3::Bucket
+
+  TargetBucket:
+    Type: AWS::S3::Bucket
+
+  ImageNotificationTopic:
+    Type: AWS::SNS::Topic
+
+Outputs:
+  SourceBucketName:
+    Value: !Ref SourceBucket
+    Export:
+      Name: SourceBucketName
+
+  TargetBucketName:
+    Value: !Ref TargetBucket
+    Export:
+      Name: TargetBucketName
+
+  SNSTopicArn:
+    Value: !Ref ImageNotificationTopic
+    Export:
+      Name: SNSTopicArn
