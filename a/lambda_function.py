@@ -1,78 +1,151 @@
-import boto3
-import os
-from io import BytesIO
-from PIL import Image
+import boto3, zipfile, io, os, time, json, subprocess, shutil, sys
 
-s3 = boto3.client("s3")
-sns = boto3.client("sns")
+REGION = "us-east-1"
+BASE_NAME = "image-compression"
 
-TARGET_BUCKET = os.environ['TARGET_BUCKET']
-SNS_TOPIC_ARN = os.environ['SNS_TOPIC_ARN']
+# AWS clients
+s3_client = boto3.client("s3", region_name=REGION)
+iam_client = boto3.client("iam")
+sns_client = boto3.client("sns")
+lambda_client = boto3.client("lambda", region_name=REGION)
+sts_client = boto3.client("sts")
 
-def compress_image(image_content):
-    before_size_kb = len(image_content) / 1024
-    img = Image.open(BytesIO(image_content))
-    before_format = img.format
-    before_width, before_height = img.size
+ACCOUNT_ID = sts_client.get_caller_identity()["Account"]
 
-    buffer = BytesIO()
-    if img.format == 'JPEG':
-        img.save(buffer, format='JPEG', quality=60, optimize=True)
-    elif img.format == 'PNG':
-        img.save(buffer, format='PNG', optimize=True)
-    else:
-        img.save(buffer, format=img.format)
+# -----------------------------
+# 1. Prompt for SNS emails
+# -----------------------------
+emails = input("Enter comma-separated email addresses for SNS notifications: ").split(",")
 
-    buffer.seek(0)
-    after_size_kb = len(buffer.getvalue()) / 1024
-    after_img = Image.open(buffer)
-    after_format = after_img.format
-    after_width, after_height = after_img.size
+# -----------------------------
+# 2. Generate unique resource names
+# -----------------------------
+timestamp = int(time.time())
+source_bucket = f"{BASE_NAME}-source-{timestamp}"
+target_bucket = f"{BASE_NAME}-target-{timestamp}"
+sns_topic_name = f"{BASE_NAME}-topic-{timestamp}"
+lambda_name = f"{BASE_NAME}-lambda-{timestamp}"
+lambda_role_name = f"{BASE_NAME}-role-{timestamp}"
 
-    return buffer, {
-        "before_format": before_format,
-        "before_width": before_width,
-        "before_height": before_height,
-        "before_size_kb": before_size_kb,
-        "after_format": after_format,
-        "after_width": after_width,
-        "after_height": after_height,
-        "after_size_kb": after_size_kb
-    }
+# -----------------------------
+# 3. Create S3 buckets (region-aware)
+# -----------------------------
+print("\nCreating S3 buckets...")
+if REGION == "us-east-1":
+    s3_client.create_bucket(Bucket=source_bucket)
+    s3_client.create_bucket(Bucket=target_bucket)
+else:
+    s3_client.create_bucket(Bucket=source_bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
+    s3_client.create_bucket(Bucket=target_bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
+print(f"Buckets created: {source_bucket}, {target_bucket}")
 
-def generate_presigned_url(bucket, key, expiration=3600):
-    return s3.generate_presigned_url('get_object', Params={'Bucket': bucket, 'Key': key}, ExpiresIn=expiration)
+# -----------------------------
+# 4. Create SNS topic and subscribe emails
+# -----------------------------
+sns_topic_arn = sns_client.create_topic(Name=sns_topic_name)["TopicArn"]
+for email in emails:
+    email = email.strip()
+    if email:
+        sns_client.subscribe(TopicArn=sns_topic_arn, Protocol="email", Endpoint=email)
+        print(f"Subscribed {email} to SNS topic")
 
-def lambda_handler(event, context):
-    summary_lines = []
+# -----------------------------
+# 5. Create IAM role for Lambda
+# -----------------------------
+trust_policy = {
+    "Version": "2012-10-17",
+    "Statement": [{"Effect": "Allow", "Principal": {"Service": "lambda.amazonaws.com"}, "Action": "sts:AssumeRole"}]
+}
+role = iam_client.create_role(RoleName=lambda_role_name, AssumeRolePolicyDocument=json.dumps(trust_policy))
+time.sleep(10)
+iam_client.attach_role_policy(RoleName=lambda_role_name, PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole")
 
-    for record in event.get("Records", []):
-        source_bucket = record['s3']['bucket']['name']
-        key = record['s3']['object']['key']
-        try:
-            response = s3.get_object(Bucket=source_bucket, Key=key)
-            image_content = response['Body'].read()
+# Inline policy for S3 and SNS
+inline_policy = {
+    "Version": "2012-10-17",
+    "Statement": [
+        {"Effect": "Allow",
+         "Action": ["s3:GetObject","s3:PutObject"],
+         "Resource":[f"arn:aws:s3:::{source_bucket}/*", f"arn:aws:s3:::{target_bucket}/*"]},
+        {"Effect": "Allow",
+         "Action":["sns:Publish"],
+         "Resource":[sns_topic_arn]}
+    ]
+}
+iam_client.put_role_policy(RoleName=lambda_role_name, PolicyName=f"{BASE_NAME}-policy", PolicyDocument=json.dumps(inline_policy))
 
-            buffer, meta = compress_image(image_content)
-            s3.put_object(Bucket=TARGET_BUCKET, Key=key, Body=buffer)
-            presigned_url = generate_presigned_url(TARGET_BUCKET, key)
+# -----------------------------
+# 6. Prepare Lambda package with dependencies
+# -----------------------------
+print("Installing dependencies and creating Lambda package...")
+package_dir = "package_temp"
+if os.path.exists(package_dir):
+    shutil.rmtree(package_dir)
+os.makedirs(package_dir)
 
-            summary_lines.append(
-                f"{key}\n"
-                f"{'-'*60}\n"
-                f"{'Original Format':<20}: {meta['before_format']}\n"
-                f"{'Original Size':<20}: {meta['before_size_kb']:.2f} KB\n"
-                f"{'Original Dimensions':<20}: {meta['before_width']}x{meta['before_height']}\n"
-                f"{'Compressed Format':<20}: {meta['after_format']}\n"
-                f"{'Compressed Size':<20}: {meta['after_size_kb']:.2f} KB\n"
-                f"{'Compressed Dimensions':<20}: {meta['after_width']}x{meta['after_height']}\n"
-                f"{'Preview Link':<20}: {presigned_url}\n"
-            )
-        except Exception as e:
-            summary_lines.append(f"Error processing {key}: {str(e)}")
+# Install dependencies locally into package_dir
+subprocess.check_call([sys.executable, "-m", "pip", "install", "boto3", "Pillow", "-t", package_dir])
 
-    subject = f"Images Compressed: {len(summary_lines)} file(s)"
-    message = "\n\n".join(summary_lines)
-    sns.publish(TopicArn=SNS_TOPIC_ARN, Message=message, Subject=subject)
+# Copy lambda_function.py into package_dir
+shutil.copy("lambda_function.py", package_dir)
 
-    return {"statusCode": 200, "body": "Images compressed and notification sent."}
+# Create zip
+zip_path = "lambda_package.zip"
+shutil.make_archive("lambda_package", 'zip', package_dir)
+
+# -----------------------------
+# 7. Create Lambda function
+# -----------------------------
+with open(zip_path, 'rb') as f:
+    zip_bytes = f.read()
+
+lambda_response = lambda_client.create_function(
+    FunctionName=lambda_name,
+    Runtime="python3.11",
+    Role=f"arn:aws:iam::{ACCOUNT_ID}:role/{lambda_role_name}",
+    Handler="lambda_function.lambda_handler",
+    Code={"ZipFile": zip_bytes},
+    Environment={"Variables":{"TARGET_BUCKET":target_bucket,"SNS_TOPIC_ARN":sns_topic_arn}},
+)
+lambda_arn = lambda_response["FunctionArn"]
+
+# -----------------------------
+# 8. Wait for propagation and add S3 permission
+# -----------------------------
+print("Waiting 10 seconds for Lambda propagation...")
+time.sleep(10)
+
+lambda_client.add_permission(
+    FunctionName=lambda_name,
+    StatementId=f"s3-invoke-{timestamp}",
+    Action="lambda:InvokeFunction",
+    Principal="s3.amazonaws.com",
+    SourceArn=f"arn:aws:s3:::{source_bucket}"
+)
+
+time.sleep(5)
+
+# -----------------------------
+# 9. Add S3 trigger
+# -----------------------------
+notification_configuration = {
+    "LambdaFunctionConfigurations":[{"LambdaFunctionArn":lambda_arn,"Events":["s3:ObjectCreated:Put"]}]
+}
+s3_client.put_bucket_notification_configuration(
+    Bucket=source_bucket,
+    NotificationConfiguration=notification_configuration
+)
+
+# Cleanup local temp files
+shutil.rmtree(package_dir)
+os.remove(zip_path)
+
+# -----------------------------
+# 10. Deployment complete
+# -----------------------------
+print("\nDeployment Complete!")
+print(f"Source Bucket: {source_bucket}")
+print(f"Target Bucket: {target_bucket}")
+print(f"SNS Topic ARN: {sns_topic_arn}")
+print(f"Lambda Function ARN: {lambda_arn}")
+print("Please confirm your SNS subscriptions via email!")
