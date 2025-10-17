@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: One Lambda Document Processor - Extract, Analyze, Notify (No Circular Dependency)
+Description: One Lambda Document Processor - Extract, Analyze, Notify (Fixed for S3 Filter Rules)
 
 Parameters:
   SnsEmail:
@@ -14,8 +14,7 @@ Resources:
   DocumentBucket:
     Type: AWS::S3::Bucket
     Properties:
-      NotificationConfiguration: {}  # leave empty - SAM will manage event
-      BucketName: !Sub "sam-one-lambda-bucket-${AWS::AccountId}"
+      BucketName: !Sub "sam-one-lambda-bucket-${AWS::AccountId}-${AWS::Region}"
 
   # ---------------------
   # DynamoDB Table
@@ -60,7 +59,7 @@ Resources:
         - DynamoDBCrudPolicy:
             TableName: !Ref DocumentTable
         - S3ReadPolicy:
-            BucketName: !Sub "sam-one-lambda-bucket-${AWS::AccountId}"
+            BucketName: !Ref DocumentBucket
         - SNSPublishMessagePolicy:
             TopicName: !Ref SNSTopic
       Environment:
@@ -68,7 +67,7 @@ Resources:
           DYNAMODB_TABLE: !Ref DocumentTable
           TOPIC_ARN: !Ref SNSTopic
       Events:
-        S3UploadEvent:
+        PdfUpload:
           Type: S3
           Properties:
             Bucket: !Ref DocumentBucket
@@ -78,8 +77,24 @@ Resources:
                 Rules:
                   - Name: suffix
                     Value: .pdf
+        TxtUpload:
+          Type: S3
+          Properties:
+            Bucket: !Ref DocumentBucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
                   - Name: suffix
                     Value: .txt
+        CsvUpload:
+          Type: S3
+          Properties:
+            Bucket: !Ref DocumentBucket
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
                   - Name: suffix
                     Value: .csv
 
