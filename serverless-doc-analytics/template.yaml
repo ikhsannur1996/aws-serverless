@@ -1,22 +1,54 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: One-Lambda Document Analytics System (S3 → Lambda → SNS)
+Description: Serverless Document Analytics with automatic upload notification and text analysis
 
 Parameters:
   SnsEmail:
     Type: String
-    Description: Email address to receive document analytics reports
+    Description: Email to receive upload and analysis notifications
 
 Resources:
-  ###########################################################
-  #  S3 Bucket for uploads
-  ###########################################################
+  # 1️⃣ S3 Bucket
   DocumentBucket:
     Type: AWS::S3::Bucket
+    Properties:
+      NotificationConfiguration:
+        TopicConfigurations:
+          - Event: "s3:ObjectCreated:*"
+            Topic: !Ref UploadSNSTopic
+    DependsOn: UploadSNSTopicPolicy
 
-  ###########################################################
-  #  DynamoDB Table for storing extracted text
-  ###########################################################
+  # 2️⃣ SNS Topic for Upload Notifications
+  UploadSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: DocumentUploadTopic
+
+  UploadSNSTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref UploadSNSTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: "s3.amazonaws.com"
+            Action: "SNS:Publish"
+            Resource: !Ref UploadSNSTopic
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub "arn:aws:s3:::${DocumentBucket}"
+
+  UploadEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !Ref SnsEmail
+      Protocol: email
+      TopicArn: !Ref UploadSNSTopic
+
+  # 3️⃣ DynamoDB Table
   DocumentTable:
     Type: AWS::Serverless::SimpleTable
     Properties:
@@ -25,47 +57,42 @@ Resources:
         Name: document_id
         Type: String
 
-  ###########################################################
-  #  SNS Topic for sending reports
-  ###########################################################
-  SNSTopic:
+  # 4️⃣ SNS Topic for Analysis Reports
+  ReportSNSTopic:
     Type: AWS::SNS::Topic
     Properties:
       TopicName: DocumentReportTopic
 
-  SNSEmailSubscription:
+  ReportEmailSubscription:
     Type: AWS::SNS::Subscription
     Properties:
       Endpoint: !Ref SnsEmail
       Protocol: email
-      TopicArn: !Ref SNSTopic
+      TopicArn: !Ref ReportSNSTopic
 
-  ###########################################################
-  #  Lambda Function: Single unified app
-  ###########################################################
+  # 5️⃣ Main Lambda Function (Extractor + Analyzer Combined)
   DocumentProcessorFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: documentProcessor
-      CodeUri: .
+      CodeUri: document_processor/
       Handler: app.lambda_handler
       Runtime: python3.9
       Timeout: 90
       MemorySize: 512
       Policies:
-        - AWSLambdaBasicExecutionRole
         - S3ReadPolicy:
             BucketName: !Ref DocumentBucket
-        - DynamoDBWritePolicy:
+        - DynamoDBCrudPolicy:
             TableName: !Ref DocumentTable
         - SNSPublishMessagePolicy:
-            TopicName: !Ref SNSTopic
+            TopicName: !Ref ReportSNSTopic
       Environment:
         Variables:
           DYNAMODB_TABLE: !Ref DocumentTable
-          TOPIC_ARN: !Ref SNSTopic
+          REPORT_TOPIC_ARN: !Ref ReportSNSTopic
       Events:
-        PdfUpload:
+        S3Upload:
           Type: S3
           Properties:
             Bucket: !Ref DocumentBucket
@@ -75,32 +102,20 @@ Resources:
                 Rules:
                   - Name: suffix
                     Value: .pdf
-        TxtUpload:
-          Type: S3
-          Properties:
-            Bucket: !Ref DocumentBucket
-            Events: s3:ObjectCreated:*
-            Filter:
-              S3Key:
-                Rules:
                   - Name: suffix
                     Value: .txt
-        CsvUpload:
-          Type: S3
-          Properties:
-            Bucket: !Ref DocumentBucket
-            Events: s3:ObjectCreated:*
-            Filter:
-              S3Key:
-                Rules:
                   - Name: suffix
                     Value: .csv
 
 Outputs:
-  UploadBucket:
-    Description: Upload documents to this S3 bucket
+  S3BucketName:
     Value: !Ref DocumentBucket
+    Description: Upload documents here to trigger analysis
 
-  ReportTopic:
-    Description: SNS Topic ARN for document reports
-    Value: !Ref SNSTopic
+  UploadSNSTopicARN:
+    Value: !Ref UploadSNSTopic
+    Description: SNS topic that receives upload notifications
+
+  ReportSNSTopicARN:
+    Value: !Ref ReportSNSTopic
+    Description: SNS topic that receives analysis reports
