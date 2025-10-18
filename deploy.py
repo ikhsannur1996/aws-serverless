@@ -5,12 +5,12 @@ import time
 import shutil
 import subprocess
 import sys
+from zipfile import ZipFile
 
 REGION = "us-east-1"
 BASE_NAME = "word-analysis"
 
 print("Step 0: Initializing AWS clients...")
-# AWS clients
 s3_client = boto3.client("s3", region_name=REGION)
 iam_client = boto3.client("iam")
 sns_client = boto3.client("sns")
@@ -24,13 +24,12 @@ print(f"Account ID: {ACCOUNT_ID}\n")
 # -----------------------------
 # 1. Prompt for SNS emails
 # -----------------------------
-print("Step 1: Prompting for SNS email subscribers...")
-emails = input("Enter comma-separated email addresses for SNS notifications: ").split(",")
+print("Step 1: Enter SNS email subscribers (comma-separated):")
+emails = input().split(",")
 
 # -----------------------------
 # 2. Generate unique resource names
 # -----------------------------
-print("Step 2: Generating unique resource names...")
 timestamp = int(time.time())
 source_bucket = f"{BASE_NAME}-source-{timestamp}"
 target_bucket = f"{BASE_NAME}-target-{timestamp}"
@@ -39,11 +38,9 @@ lambda_name = f"{BASE_NAME}-lambda-{timestamp}"
 lambda_role_name = f"{BASE_NAME}-role-{timestamp}"
 dynamo_table = f"{BASE_NAME}-table-{timestamp}"
 
-print(f"Source bucket: {source_bucket}")
-print(f"Target bucket: {target_bucket}")
+print(f"Buckets: {source_bucket}, {target_bucket}")
 print(f"SNS topic: {sns_topic_name}")
 print(f"Lambda function: {lambda_name}")
-print(f"IAM role: {lambda_role_name}")
 print(f"DynamoDB table: {dynamo_table}\n")
 
 # -----------------------------
@@ -60,7 +57,6 @@ print("S3 buckets created.\n")
 # -----------------------------
 # 4. Create SNS topic and subscribe emails
 # -----------------------------
-print("Step 4: Creating SNS topic and subscribing emails...")
 sns_topic_arn = sns_client.create_topic(Name=sns_topic_name)["TopicArn"]
 for email in emails:
     email = email.strip()
@@ -78,7 +74,7 @@ trust_policy = {
     "Statement": [{"Effect": "Allow", "Principal": {"Service": "lambda.amazonaws.com"}, "Action": "sts:AssumeRole"}]
 }
 role = iam_client.create_role(RoleName=lambda_role_name, AssumeRolePolicyDocument=json.dumps(trust_policy))
-print("IAM role created, waiting for propagation...")
+print("IAM role created. Waiting 10s for propagation...")
 time.sleep(10)
 iam_client.attach_role_policy(RoleName=lambda_role_name, PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole")
 
@@ -97,7 +93,7 @@ inline_policy = {
     ]
 }
 iam_client.put_role_policy(RoleName=lambda_role_name, PolicyName=f"{BASE_NAME}-policy", PolicyDocument=json.dumps(inline_policy))
-print("Attached inline policy for S3, SNS, and DynamoDB access.\n")
+print("Attached inline policy.\n")
 
 # -----------------------------
 # 6. Create DynamoDB table
@@ -112,29 +108,69 @@ dynamodb_client.create_table(
 print("DynamoDB table created.\n")
 
 # -----------------------------
-# 7. Prepare Lambda package
+# 7. Prepare Lambda function code
 # -----------------------------
-print("Step 7: Packaging Lambda function...")
-package_dir = "package_temp"
+print("Step 7: Preparing Lambda package...")
+lambda_code = f"""
+import boto3
+import os
+
+TARGET_BUCKET = os.environ['TARGET_BUCKET']
+SNS_TOPIC_ARN = os.environ['SNS_TOPIC_ARN']
+DYNAMO_TABLE = os.environ['DYNAMO_TABLE']
+
+s3 = boto3.client('s3')
+sns = boto3.client('sns')
+dynamodb = boto3.client('dynamodb')
+
+def lambda_handler(event, context):
+    summary_lines = []
+    for record in event.get('Records', []):
+        bucket = record['s3']['bucket']['name']
+        key = record['s3']['object']['key']
+        try:
+            response = s3.get_object(Bucket=bucket, Key=key)
+            content = response['Body'].read().decode('utf-8')
+            words = content.split()
+            total_words = len(words)
+            unique_words = len(set(words))
+            top_word = max(set(words), key=words.count) if words else ''
+            dynamodb.put_item(
+                TableName=DYNAMO_TABLE,
+                Item={{'FileName': {{'S': key}}, 'TotalWords': {{'N': str(total_words)}},
+                      'UniqueWords': {{'N': str(unique_words)}}, 'TopWord': {{'S': top_word}}}}
+            )
+            summary_lines.append(f"{{key}}: total={{total_words}}, unique={{unique_words}}, top='{{top_word}}'")
+        except Exception as e:
+            summary_lines.append(f"{{key}}: error - {{e}}")
+    if summary_lines:
+        sns.publish(
+            TopicArn=SNS_TOPIC_ARN,
+            Subject=f"Word Analysis Summary ({{len(summary_lines)}} file(s))",
+            Message='\\n'.join(summary_lines)
+        )
+    return {{'statusCode': 200, 'body': 'Processed and notified.'}}
+"""
+
+# -----------------------------
+# 8. Package Lambda function
+# -----------------------------
+package_dir = "lambda_package_temp"
 if os.path.exists(package_dir):
     shutil.rmtree(package_dir)
 os.makedirs(package_dir)
 
-# Install dependencies into package_dir
-subprocess.check_call([sys.executable, "-m", "pip", "install", "boto3", "-t", package_dir])
+with open(os.path.join(package_dir, "lambda_word_analysis.py"), "w") as f:
+    f.write(lambda_code)
 
-# Copy lambda function file
-shutil.copy("lambda_word_analysis.py", package_dir)
-
-# Create zip
 zip_path = "lambda_package.zip"
 shutil.make_archive("lambda_package", 'zip', package_dir)
 print("Lambda package created.\n")
 
 # -----------------------------
-# 8. Create Lambda function with 60s timeout
+# 9. Deploy Lambda function
 # -----------------------------
-print("Step 8: Deploying Lambda function...")
+print("Step 9: Deploying Lambda function...")
 with open(zip_path, 'rb') as f:
     zip_bytes = f.read()
 
@@ -151,15 +187,14 @@ lambda_response = lambda_client.create_function(
             "DYNAMO_TABLE": dynamo_table
         }
     },
-    Timeout=60  # 60 seconds timeout
+    Timeout=60
 )
 lambda_arn = lambda_response["FunctionArn"]
-print(f"Lambda function {lambda_name} created: {lambda_arn}\n")
+print(f"Lambda deployed: {lambda_arn}\n")
 
 # -----------------------------
-# 9. Add S3 permission to Lambda
+# 10. Add S3 trigger
 # -----------------------------
-print("Step 9: Adding S3 invoke permission...")
 lambda_client.add_permission(
     FunctionName=lambda_name,
     StatementId=f"s3-invoke-{timestamp}",
@@ -167,12 +202,7 @@ lambda_client.add_permission(
     Principal="s3.amazonaws.com",
     SourceArn=f"arn:aws:s3:::{source_bucket}"
 )
-time.sleep(5)
 
-# -----------------------------
-# 10. Add S3 trigger
-# -----------------------------
-print("Step 10: Configuring S3 trigger to Lambda...")
 notification_configuration = {
     "LambdaFunctionConfigurations":[{"LambdaFunctionArn":lambda_arn,"Events":["s3:ObjectCreated:Put"]}]
 }
@@ -180,21 +210,21 @@ s3_client.put_bucket_notification_configuration(
     Bucket=source_bucket,
     NotificationConfiguration=notification_configuration
 )
-print("S3 trigger configured successfully.\n")
+print("S3 trigger configured.\n")
 
 # -----------------------------
-# Cleanup local files
+# 11. Cleanup local files
 # -----------------------------
 shutil.rmtree(package_dir)
 os.remove(zip_path)
 
 # -----------------------------
-# Deployment complete
+# 12. Deployment complete
 # -----------------------------
-print("Step 11: Deployment complete!")
+print("Deployment complete!")
 print(f"Source Bucket: {source_bucket}")
 print(f"Target Bucket: {target_bucket}")
 print(f"SNS Topic ARN: {sns_topic_arn}")
 print(f"Lambda Function ARN: {lambda_arn}")
 print(f"DynamoDB Table: {dynamo_table}")
-print("Please confirm your SNS subscriptions via email!")
+print("Please confirm your SNS subscriptions via email.")
