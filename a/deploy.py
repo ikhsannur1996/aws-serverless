@@ -50,10 +50,10 @@ for bucket in [source_bucket, target_bucket]:
         else:
             s3_client.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
         print(f"Created bucket: {bucket}")
-    except s3_client.exceptions.BucketAlreadyExists:
-        print(f"Bucket already exists (name must be globally unique!): {bucket}")
     except s3_client.exceptions.BucketAlreadyOwnedByYou:
         print(f"Bucket already owned by you: {bucket}")
+    except s3_client.exceptions.BucketAlreadyExists:
+        print(f"Bucket already exists (globally!): {bucket}")
 
 # -----------------------------
 # 4. Create SNS topic and subscribe emails
@@ -112,9 +112,10 @@ print("IAM role and policies created for Lambda.")
 # 7. Write Lambda code
 # -----------------------------
 lambda_code = f"""
-import boto3, csv, re, fitz
+import boto3, csv, re
 from io import StringIO
 from collections import Counter
+from pdfminer.high_level import extract_text
 import os
 
 TARGET_BUCKET = os.environ['TARGET_BUCKET']
@@ -138,13 +139,6 @@ def analyze_text(text):
         'top_words': top_words,
         'total_lines': len(lines)
     }}
-
-def extract_pdf_text(pdf_bytes):
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    text = ""
-    for page in doc:
-        text += page.get_text()
-    return text
 
 def lambda_handler(event, context):
     messages = []
@@ -174,7 +168,7 @@ def lambda_handler(event, context):
                 analysis = analyze_text(content_str)
                 table.put_item(Item={{'id': key, **analysis}})
             elif file_lower.endswith(".pdf"):
-                text = extract_pdf_text(content_bytes)
+                text = extract_text(StringIO(content_bytes.decode('latin1')))
                 analysis = analyze_text(text)
                 table.put_item(Item={{'id': key, **analysis}})
             else:
@@ -207,8 +201,8 @@ if os.path.exists(package_dir): shutil.rmtree(package_dir)
 os.makedirs(package_dir)
 shutil.copy(LAMBDA_CODE_FILENAME, package_dir)
 
-# Install PyMuPDF (fitz) locally in package_dir
-subprocess.check_call([sys.executable, "-m", "pip", "install", "PyMuPDF", "-t", package_dir])
+# Install pdfminer.six locally in package_dir
+subprocess.check_call([sys.executable, "-m", "pip", "install", "pdfminer.six", "-t", package_dir])
 
 zip_path = "lambda_package.zip"
 shutil.make_archive("lambda_package", 'zip', package_dir)
