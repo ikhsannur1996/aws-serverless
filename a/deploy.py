@@ -263,4 +263,5 @@ os.remove(LAMBDA_CODE_FILENAME)
 print("\nDeployment complete! Check your SNS emails to confirm subscription.")
 print(f"Source bucket: {source_bucket}")
 print(f"Target bucket: {target_bucket}")
-print(f"DynamoDB table: {DYNAM
+print(f"DynamoDB table: {DYNAMO_TABLE_NAME}")
+print(f"Lambda function ARN: {lambda_arn}")
