@@ -21,7 +21,6 @@ print("Checking Lambda functions...")
 for fn in lambda_client.list_functions()['Functions']:
     created = fn['LastModified']
     fn_name = fn['FunctionName']
-    # AWS returns string like '2025-10-17T04:15:30.000+0000'
     created_dt = datetime.strptime(created, "%Y-%m-%dT%H:%M:%S.%f%z")
     if created_dt >= cutoff and BASE_NAME in fn_name:
         print(f"Deleting Lambda: {fn_name}")
@@ -54,7 +53,7 @@ for bucket in s3_client.list_buckets()['Buckets']:
     created = bucket['CreationDate']
     if created >= cutoff and BASE_NAME in bucket_name:
         print(f"Deleting S3 bucket: {bucket_name}")
-        # Delete objects (and versions if versioned)
+        # Delete objects (including versioned)
         try:
             paginator = s3_client.get_paginator('list_object_versions')
             for page in paginator.paginate(Bucket=bucket_name):
@@ -73,13 +72,23 @@ print("Checking SNS topics...")
 for topic in sns_client.list_topics()['Topics']:
     arn = topic['TopicArn']
     if BASE_NAME in arn:
-        # SNS does not provide creation date, delete anyway if BASE_NAME matches
         print(f"Deleting SNS topic: {arn}")
-        # Unsubscribe all
+        # Unsubscribe all confirmed subscriptions
         subs = sns_client.list_subscriptions_by_topic(TopicArn=arn)['Subscriptions']
         for sub in subs:
-            sns_client.unsubscribe(SubscriptionArn=sub['SubscriptionArn'])
-        sns_client.delete_topic(TopicArn=arn)
+            sub_arn = sub.get('SubscriptionArn')
+            if sub_arn and sub_arn != 'PendingConfirmation':
+                try:
+                    sns_client.unsubscribe(SubscriptionArn=sub_arn)
+                    print(f"Unsubscribed {sub_arn}")
+                except Exception as e:
+                    print(f"Failed to unsubscribe {sub_arn}: {e}")
+        # Delete topic
+        try:
+            sns_client.delete_topic(TopicArn=arn)
+            print(f"Deleted SNS topic {arn}")
+        except Exception as e:
+            print(f"Failed to delete topic {arn}: {e}")
 
 # -----------------------------
 # 5. Delete DynamoDB tables created in last 24h
