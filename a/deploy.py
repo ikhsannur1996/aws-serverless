@@ -150,30 +150,48 @@ lambda_response = lambda_client.create_function(
     Environment={"Variables":{"TARGET_BUCKET":target_bucket,"SNS_TOPIC_ARN":sns_topic_arn}}
 )
 lambda_arn = lambda_response["FunctionArn"]
-time.sleep(10)
 print(f"Lambda function deployed: {lambda_arn}")
 
 # -----------------------------
-# 9. Add S3 permission
+# 9. Wait and add S3 permission
 # -----------------------------
-lambda_client.add_permission(
-    FunctionName=lambda_name,
-    StatementId=f"s3-invoke-{timestamp}",
-    Action="lambda:InvokeFunction",
-    Principal="s3.amazonaws.com",
-    SourceArn=f"arn:aws:s3:::{source_bucket}"
-)
+print("Waiting for Lambda propagation before adding S3 permission...")
+time.sleep(15)  # wait 15 seconds
+
+# Retry loop for permission
+for attempt in range(5):
+    try:
+        lambda_client.add_permission(
+            FunctionName=lambda_name,
+            StatementId=f"s3-invoke-{timestamp}",
+            Action="lambda:InvokeFunction",
+            Principal="s3.amazonaws.com",
+            SourceArn=f"arn:aws:s3:::{source_bucket}"
+        )
+        print("S3 permission added to Lambda.")
+        break
+    except lambda_client.exceptions.ResourceConflictException:
+        print("Permission already exists, continuing.")
+        break
+    except Exception as e:
+        print(f"Attempt {attempt+1}: Failed to add permission, retrying in 5s... ({e})")
+        time.sleep(5)
+else:
+    raise Exception("Failed to add S3 invoke permission after multiple attempts.")
 
 # -----------------------------
 # 10. Add S3 trigger
 # -----------------------------
 notification_configuration = {
-    "LambdaFunctionConfigurations":[{"LambdaFunctionArn":lambda_arn,"Events":["s3:ObjectCreated:*"]}]
+    "LambdaFunctionConfigurations":[
+        {"LambdaFunctionArn":lambda_arn,"Events":["s3:ObjectCreated:*"]}
+    ]
 }
 s3_client.put_bucket_notification_configuration(
     Bucket=source_bucket,
     NotificationConfiguration=notification_configuration
 )
+print("S3 trigger configured successfully.")
 
 # -----------------------------
 # 11. Cleanup local files
@@ -183,7 +201,7 @@ os.remove(zip_path)
 os.remove(LAMBDA_CODE_FILENAME)
 
 # -----------------------------
-# Deployment Complete
+# Deployment complete
 # -----------------------------
 print("\nDeployment complete!")
 print(f"Source Bucket: {source_bucket}")
