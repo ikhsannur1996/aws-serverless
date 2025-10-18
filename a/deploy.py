@@ -1,8 +1,7 @@
 import boto3, os, time, shutil, subprocess, sys, json
-from io import BytesIO
 
 REGION = "us-east-1"
-BASE_NAME = "file_word_analysis"
+BASE_NAME = "file-word-analysis"  # use hyphens only for S3 bucket names
 LAMBDA_CODE_FILENAME = "lambda_word_analysis.py"
 DYNAMO_TABLE_NAME = f"{BASE_NAME}-table"
 
@@ -45,11 +44,16 @@ print(f"IAM role: {lambda_role_name}")
 # 3. Create S3 buckets
 # -----------------------------
 for bucket in [source_bucket, target_bucket]:
-    if REGION == "us-east-1":
-        s3_client.create_bucket(Bucket=bucket)
-    else:
-        s3_client.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
-print("S3 buckets created.")
+    try:
+        if REGION == "us-east-1":
+            s3_client.create_bucket(Bucket=bucket)
+        else:
+            s3_client.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
+        print(f"Created bucket: {bucket}")
+    except s3_client.exceptions.BucketAlreadyExists:
+        print(f"Bucket already exists (name must be globally unique!): {bucket}")
+    except s3_client.exceptions.BucketAlreadyOwnedByYou:
+        print(f"Bucket already owned by you: {bucket}")
 
 # -----------------------------
 # 4. Create SNS topic and subscribe emails
@@ -108,9 +112,10 @@ print("IAM role and policies created for Lambda.")
 # 7. Write Lambda code
 # -----------------------------
 lambda_code = f"""
-import boto3, os, csv, json, re, fitz
+import boto3, csv, re, fitz
 from io import StringIO
 from collections import Counter
+import os
 
 TARGET_BUCKET = os.environ['TARGET_BUCKET']
 SNS_TOPIC_ARN = os.environ['SNS_TOPIC_ARN']
@@ -261,9 +266,8 @@ shutil.rmtree(package_dir)
 os.remove(zip_path)
 os.remove(LAMBDA_CODE_FILENAME)
 
-print("\nDeployment complete!")
+print("\nDeployment complete! Check your SNS emails to confirm subscription.")
 print(f"Source bucket: {source_bucket}")
 print(f"Target bucket: {target_bucket}")
 print(f"DynamoDB table: {DYNAMO_TABLE_NAME}")
-print(f"Lambda function: {lambda_arn}")
-print("Check your email to confirm SNS subscriptions.")
+print(f"Lambda function: {lambda_name}")
