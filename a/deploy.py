@@ -1,19 +1,22 @@
 import boto3
 import os
 import shutil
-import zipfile
 import time
 import json
+import csv
+from io import StringIO
 
 REGION = "us-east-1"
-BASE_NAME = "csv-to-json"
-LAMBDA_CODE_FILENAME = "lambda_csv_to_json.py"
+BASE_NAME = "file_word_analysis"
+LAMBDA_CODE_FILENAME = "lambda_word_analysis.py"
+DYNAMO_TABLE_NAME = f"{BASE_NAME}-table"
 
 # AWS clients
 s3_client = boto3.client("s3", region_name=REGION)
 iam_client = boto3.client("iam")
 sns_client = boto3.client("sns")
 lambda_client = boto3.client("lambda", region_name=REGION)
+dynamodb_client = boto3.client("dynamodb", region_name=REGION)
 sts_client = boto3.client("sts")
 
 ACCOUNT_ID = sts_client.get_caller_identity()["Account"]
@@ -21,14 +24,11 @@ ACCOUNT_ID = sts_client.get_caller_identity()["Account"]
 # -----------------------------
 # 1. Prompt for SNS subscribers
 # -----------------------------
-emails_input = input("Enter comma-separated email addresses to receive notifications: ").strip()
+emails_input = input("Enter comma-separated email addresses for notifications: ").strip()
 emails = [email.strip() for email in emails_input.split(",") if email.strip()]
-
 if not emails:
-    print("No valid email addresses provided. Exiting.")
+    print("No valid emails provided. Exiting.")
     exit(1)
-
-print(f"Subscribing the following emails to SNS topic: {', '.join(emails)}")
 
 # -----------------------------
 # 2. Generate resource names
@@ -40,6 +40,12 @@ sns_topic_name = f"{BASE_NAME}-topic-{timestamp}"
 lambda_name = f"{BASE_NAME}-lambda-{timestamp}"
 lambda_role_name = f"{BASE_NAME}-role-{timestamp}"
 
+print(f"Source bucket: {source_bucket}")
+print(f"Target bucket: {target_bucket}")
+print(f"DynamoDB table: {DYNAMO_TABLE_NAME}")
+print(f"Lambda function: {lambda_name}")
+print(f"IAM role: {lambda_role_name}")
+
 # -----------------------------
 # 3. Create S3 buckets
 # -----------------------------
@@ -48,29 +54,41 @@ for bucket in [source_bucket, target_bucket]:
         s3_client.create_bucket(Bucket=bucket)
     else:
         s3_client.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
-print(f"S3 buckets created: {source_bucket}, {target_bucket}")
+print("S3 buckets created.")
 
 # -----------------------------
 # 4. Create SNS topic and subscribe emails
 # -----------------------------
 sns_topic_arn = sns_client.create_topic(Name=sns_topic_name)["TopicArn"]
 for email in emails:
-    sns_client.subscribe(
-        TopicArn=sns_topic_arn,
-        Protocol="email",
-        Endpoint=email
-    )
-    print(f"Subscribed {email} to SNS topic. Please check inbox to confirm subscription.")
+    sns_client.subscribe(TopicArn=sns_topic_arn, Protocol="email", Endpoint=email)
+print("SNS topic created and subscriptions sent.")
 
 # -----------------------------
-# 5. Create IAM role for Lambda
+# 5. Create DynamoDB table
+# -----------------------------
+try:
+    dynamodb_client.create_table(
+        TableName=DYNAMO_TABLE_NAME,
+        KeySchema=[{'AttributeName': 'id', 'KeyType': 'HASH'}],
+        AttributeDefinitions=[{'AttributeName': 'id', 'AttributeType': 'S'}],
+        BillingMode='PAY_PER_REQUEST'
+    )
+    print("DynamoDB table creating...")
+    waiter = dynamodb_client.get_waiter('table_exists')
+    waiter.wait(TableName=DYNAMO_TABLE_NAME)
+    print("DynamoDB table ready.")
+except dynamodb_client.exceptions.ResourceInUseException:
+    print("DynamoDB table already exists, skipping creation.")
+
+# -----------------------------
+# 6. Create IAM role for Lambda
 # -----------------------------
 trust_policy = {
     "Version": "2012-10-17",
     "Statement": [{"Effect": "Allow", "Principal": {"Service": "lambda.amazonaws.com"}, "Action": "sts:AssumeRole"}]
 }
 role = iam_client.create_role(RoleName=lambda_role_name, AssumeRolePolicyDocument=json.dumps(trust_policy))
-print("IAM role created, waiting for propagation...")
 time.sleep(10)
 iam_client.attach_role_policy(RoleName=lambda_role_name, PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole")
 
@@ -78,27 +96,49 @@ inline_policy = {
     "Version": "2012-10-17",
     "Statement": [
         {"Effect": "Allow",
-         "Action": ["s3:GetObject","s3:PutObject"],
-         "Resource":[f"arn:aws:s3:::{source_bucket}/*", f"arn:aws:s3:::{target_bucket}/*"]},
+         "Action": ["s3:GetObject"],
+         "Resource":[f"arn:aws:s3:::{source_bucket}/*"]},
         {"Effect": "Allow",
          "Action":["sns:Publish"],
-         "Resource":[sns_topic_arn]}
+         "Resource":[sns_topic_arn]},
+        {"Effect": "Allow",
+         "Action":["dynamodb:PutItem"],
+         "Resource":[f"arn:aws:dynamodb:{REGION}:{ACCOUNT_ID}:table/{DYNAMO_TABLE_NAME}"]}
     ]
 }
 iam_client.put_role_policy(RoleName=lambda_role_name, PolicyName=f"{BASE_NAME}-policy", PolicyDocument=json.dumps(inline_policy))
-print("Attached inline policy for S3 and SNS access.")
+print("IAM role and policies created for Lambda.")
 
 # -----------------------------
-# 6. Write Lambda code
+# 7. Write Lambda code
 # -----------------------------
 lambda_code = f"""
 import boto3, os, csv, json
 from io import StringIO
+import re
+from collections import Counter
 
 TARGET_BUCKET = os.environ['TARGET_BUCKET']
 SNS_TOPIC_ARN = os.environ['SNS_TOPIC_ARN']
+DYNAMO_TABLE = os.environ['DYNAMO_TABLE']
+
 s3 = boto3.client('s3')
 sns = boto3.client('sns')
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table(DYNAMO_TABLE)
+
+def analyze_text(text):
+    words = re.findall(r'\\b\\w+\\b', text.lower())
+    total_words = len(words)
+    unique_words = len(set(words))
+    top_words = Counter(words).most_common(5)
+    lines = text.splitlines()
+    return {{
+        'total_words': total_words,
+        'unique_words': unique_words,
+        'top_words': top_words,
+        'total_lines': len(lines)
+    }}
 
 def lambda_handler(event, context):
     messages = []
@@ -106,27 +146,58 @@ def lambda_handler(event, context):
     for record in event.get("Records", []):
         src_bucket = record['s3']['bucket']['name']
         key = record['s3']['object']['key']
+
         try:
             obj = s3.get_object(Bucket=src_bucket, Key=key)
-            csv_content = obj['Body'].read().decode('utf-8')
-            reader = csv.DictReader(StringIO(csv_content))
-            json_data = list(reader)
-            json_key = key.rsplit('.',1)[0]+'.json'
-            s3.put_object(Bucket=TARGET_BUCKET, Key=json_key, Body=json.dumps(json_data, indent=2).encode('utf-8'))
-            presigned_url = s3.generate_presigned_url('get_object', Params={{'Bucket':TARGET_BUCKET,'Key':json_key}}, ExpiresIn=3600)
-            messages.append(f"Converted '{{key}}' -> '{{json_key}}', Preview: {{presigned_url}}")
+            content_bytes = obj['Body'].read()
+            content_str = content_bytes.decode('utf-8')
+
+            # Detect CSV
+            is_csv = False
+            delimiter = ','
+            try:
+                sniffer = csv.Sniffer()
+                dialect = sniffer.sniff(content_str[:1024])
+                is_csv = True
+                delimiter = dialect.delimiter
+            except csv.Error:
+                is_csv = False
+
+            analysis_results = []
+
+            if is_csv:
+                reader = csv.DictReader(StringIO(content_str), delimiter=delimiter)
+                for i, row in enumerate(reader):
+                    row_text = ' '.join(row.values())
+                    analysis = analyze_text(row_text)
+                    analysis['row_number'] = i+1
+                    analysis_results.append(analysis)
+                    table.put_item(Item={{'id': f"{{key}}_row{{i+1}}", **analysis}})
+            else:
+                analysis = analyze_text(content_str)
+                analysis_results.append(analysis)
+                table.put_item(Item={{'id': key, **analysis}})
+
+            messages.append(f"Processed '{{key}}': {{len(analysis_results)}} entries analyzed.")
+
         except Exception as e:
             messages.append(f"Failed '{{key}}': {{e}}")
+
     if messages:
-        sns.publish(TopicArn=SNS_TOPIC_ARN, Subject=f"CSV to JSON Conversion", Message='\\n'.join(messages))
-    return {{'statusCode':200,'body':'Done'}}
+        sns.publish(
+            TopicArn=SNS_TOPIC_ARN,
+            Subject=f"Word Analysis Summary ({{len(messages)}} file(s))",
+            Message='\\n'.join(messages)
+        )
+
+    return {{'statusCode': 200, 'body': 'Done'}}
 """
 
 with open(LAMBDA_CODE_FILENAME, "w") as f:
     f.write(lambda_code)
 
 # -----------------------------
-# 7. Package Lambda
+# 8. Package Lambda
 # -----------------------------
 package_dir = "lambda_package"
 if os.path.exists(package_dir): shutil.rmtree(package_dir)
@@ -136,7 +207,7 @@ zip_path = "lambda_package.zip"
 shutil.make_archive("lambda_package", 'zip', package_dir)
 
 # -----------------------------
-# 8. Deploy Lambda
+# 9. Deploy Lambda
 # -----------------------------
 with open(zip_path, 'rb') as f:
     zip_bytes = f.read()
@@ -147,40 +218,28 @@ lambda_response = lambda_client.create_function(
     Role=f"arn:aws:iam::{ACCOUNT_ID}:role/{lambda_role_name}",
     Handler=f"{LAMBDA_CODE_FILENAME.rsplit('.',1)[0]}.lambda_handler",
     Code={"ZipFile": zip_bytes},
-    Environment={"Variables":{"TARGET_BUCKET":target_bucket,"SNS_TOPIC_ARN":sns_topic_arn}}
+    Environment={"Variables":{"TARGET_BUCKET":target_bucket,"SNS_TOPIC_ARN":sns_topic_arn,"DYNAMO_TABLE":DYNAMO_TABLE_NAME}}
 )
 lambda_arn = lambda_response["FunctionArn"]
 print(f"Lambda function deployed: {lambda_arn}")
 
 # -----------------------------
-# 9. Wait and add S3 permission
+# 10. Add S3 permission
 # -----------------------------
-print("Waiting for Lambda propagation before adding S3 permission...")
-time.sleep(15)  # wait 15 seconds
-
-# Retry loop for permission
-for attempt in range(5):
-    try:
-        lambda_client.add_permission(
-            FunctionName=lambda_name,
-            StatementId=f"s3-invoke-{timestamp}",
-            Action="lambda:InvokeFunction",
-            Principal="s3.amazonaws.com",
-            SourceArn=f"arn:aws:s3:::{source_bucket}"
-        )
-        print("S3 permission added to Lambda.")
-        break
-    except lambda_client.exceptions.ResourceConflictException:
-        print("Permission already exists, continuing.")
-        break
-    except Exception as e:
-        print(f"Attempt {attempt+1}: Failed to add permission, retrying in 5s... ({e})")
-        time.sleep(5)
-else:
-    raise Exception("Failed to add S3 invoke permission after multiple attempts.")
+time.sleep(15)
+try:
+    lambda_client.add_permission(
+        FunctionName=lambda_name,
+        StatementId=f"s3-invoke-{timestamp}",
+        Action="lambda:InvokeFunction",
+        Principal="s3.amazonaws.com",
+        SourceArn=f"arn:aws:s3:::{source_bucket}"
+    )
+except lambda_client.exceptions.ResourceConflictException:
+    pass
 
 # -----------------------------
-# 10. Add S3 trigger
+# 11. Add S3 trigger
 # -----------------------------
 notification_configuration = {
     "LambdaFunctionConfigurations":[
@@ -191,21 +250,18 @@ s3_client.put_bucket_notification_configuration(
     Bucket=source_bucket,
     NotificationConfiguration=notification_configuration
 )
-print("S3 trigger configured successfully.")
+print("S3 trigger configured.")
 
 # -----------------------------
-# 11. Cleanup local files
+# 12. Cleanup local files
 # -----------------------------
 shutil.rmtree(package_dir)
 os.remove(zip_path)
 os.remove(LAMBDA_CODE_FILENAME)
 
-# -----------------------------
-# Deployment complete
-# -----------------------------
 print("\nDeployment complete!")
-print(f"Source Bucket: {source_bucket}")
-print(f"Target Bucket: {target_bucket}")
-print(f"SNS Topic ARN: {sns_topic_arn}")
-print(f"Lambda Function ARN: {lambda_arn}")
-print("Upload CSV files manually to the source bucket to test conversion.")
+print(f"Source bucket: {source_bucket}")
+print(f"Target bucket: {target_bucket}")
+print(f"DynamoDB table: {DYNAMO_TABLE_NAME}")
+print(f"Lambda function: {lambda_arn}")
+print("Check your email to confirm SNS subscriptions.")
