@@ -1,34 +1,31 @@
-import boto3, os, json, time, shutil, subprocess, sys
-from zipfile import ZipFile
+import boto3, os, time, shutil, subprocess, sys, json
 
-# -----------------------------
-# CONFIGURATION
-# -----------------------------
 REGION = "us-east-1"
-BASE_NAME = "word-analysis"
-LAMBDA_RUNTIME = "python3.11"
-LAMBDA_HANDLER = "lambda_word_analysis.lambda_handler"
-DYNAMO_TABLE_NAME = f"{BASE_NAME}-dynamo"
+BASE_NAME = "file-word-analysis"
+LAMBDA_CODE_FILENAME = "lambda_word_analysis.py"
+DYNAMO_TABLE_NAME = f"{BASE_NAME}-table"
 
-# -----------------------------
-# AWS CLIENTS
-# -----------------------------
+# AWS clients
 s3_client = boto3.client("s3", region_name=REGION)
 iam_client = boto3.client("iam")
 sns_client = boto3.client("sns")
 lambda_client = boto3.client("lambda", region_name=REGION)
-dynamodb_client = boto3.client("dynamodb")
+dynamodb_client = boto3.client("dynamodb", region_name=REGION)
 sts_client = boto3.client("sts")
-account_id = sts_client.get_caller_identity()["Account"]
+
+ACCOUNT_ID = sts_client.get_caller_identity()["Account"]
 
 # -----------------------------
-# 1. PROMPT EMAILS
+# 1. Prompt for SNS subscribers
 # -----------------------------
-emails = input("Enter comma-separated emails for SNS notifications: ").split(",")
-summary_email = input("Enter email for direct summary report: ").strip()
+emails_input = input("Enter comma-separated email addresses for notifications: ").strip()
+emails = [email.strip() for email in emails_input.split(",") if email.strip()]
+if not emails:
+    print("No valid emails provided. Exiting.")
+    exit(1)
 
 # -----------------------------
-# 2. GENERATE RESOURCE NAMES
+# 2. Generate resource names
 # -----------------------------
 timestamp = int(time.time())
 source_bucket = f"{BASE_NAME}-source-{timestamp}"
@@ -37,98 +34,82 @@ sns_topic_name = f"{BASE_NAME}-topic-{timestamp}"
 lambda_name = f"{BASE_NAME}-lambda-{timestamp}"
 lambda_role_name = f"{BASE_NAME}-role-{timestamp}"
 
-print(f"Resources will be created with timestamp {timestamp}")
+print(f"Source bucket: {source_bucket}")
+print(f"Target bucket: {target_bucket}")
+print(f"DynamoDB table: {DYNAMO_TABLE_NAME}")
+print(f"Lambda function: {lambda_name}")
+print(f"IAM role: {lambda_role_name}")
 
 # -----------------------------
-# 3. CREATE S3 BUCKETS
+# 3. Create S3 buckets
 # -----------------------------
-print("Creating S3 buckets...")
 for bucket in [source_bucket, target_bucket]:
-    if REGION == "us-east-1":
-        s3_client.create_bucket(Bucket=bucket)
-    else:
-        s3_client.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
-    print(f"Bucket created: {bucket}")
+    try:
+        if REGION == "us-east-1":
+            s3_client.create_bucket(Bucket=bucket)
+        else:
+            s3_client.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
+        print(f"Created bucket: {bucket}")
+    except Exception as e:
+        print(f"Bucket {bucket} creation skipped or failed: {e}")
 
 # -----------------------------
-# 4. CREATE SNS TOPIC
+# 4. Create SNS topic and subscribe emails
 # -----------------------------
-print("Creating SNS topic...")
 sns_topic_arn = sns_client.create_topic(Name=sns_topic_name)["TopicArn"]
 for email in emails:
-    email = email.strip()
-    if email:
-        sns_client.subscribe(TopicArn=sns_topic_arn, Protocol="email", Endpoint=email)
-        print(f"Subscribed {email}")
+    sns_client.subscribe(TopicArn=sns_topic_arn, Protocol="email", Endpoint=email)
+print("SNS topic created and subscriptions sent.")
 
 # -----------------------------
-# 5. CREATE DYNAMODB TABLE
+# 5. Create DynamoDB table
 # -----------------------------
-print("Creating DynamoDB table...")
 try:
     dynamodb_client.create_table(
         TableName=DYNAMO_TABLE_NAME,
-        KeySchema=[{'AttributeName': 'id','KeyType':'HASH'}],
-        AttributeDefinitions=[{'AttributeName':'id','AttributeType':'S'}],
+        KeySchema=[{'AttributeName': 'id', 'KeyType': 'HASH'}],
+        AttributeDefinitions=[{'AttributeName': 'id', 'AttributeType': 'S'}],
         BillingMode='PAY_PER_REQUEST'
     )
+    print("DynamoDB table creating...")
     waiter = dynamodb_client.get_waiter('table_exists')
     waiter.wait(TableName=DYNAMO_TABLE_NAME)
-    print(f"DynamoDB table created: {DYNAMO_TABLE_NAME}")
+    print("DynamoDB table ready.")
 except dynamodb_client.exceptions.ResourceInUseException:
-    print(f"DynamoDB table {DYNAMO_TABLE_NAME} already exists")
+    print("DynamoDB table already exists, skipping creation.")
 
 # -----------------------------
-# 6. CREATE IAM ROLE
+# 6. Create IAM role for Lambda
 # -----------------------------
-print("Creating IAM role for Lambda...")
 trust_policy = {
-    "Version":"2012-10-17",
-    "Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]
+    "Version": "2012-10-17",
+    "Statement": [{"Effect": "Allow", "Principal": {"Service": "lambda.amazonaws.com"}, "Action": "sts:AssumeRole"}]
 }
-role = iam_client.create_role(
-    RoleName=lambda_role_name,
-    AssumeRolePolicyDocument=json.dumps(trust_policy)
-)
-time.sleep(10)  # Wait for role propagation
-iam_client.attach_role_policy(
-    RoleName=lambda_role_name,
-    PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-)
+role = iam_client.create_role(RoleName=lambda_role_name, AssumeRolePolicyDocument=json.dumps(trust_policy))
+time.sleep(10)
+iam_client.attach_role_policy(RoleName=lambda_role_name, PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole")
 
 inline_policy = {
     "Version": "2012-10-17",
     "Statement": [
         {"Effect": "Allow",
-         "Action": ["s3:GetObject","s3:PutObject"],
-         "Resource":[f"arn:aws:s3:::{source_bucket}/*", f"arn:aws:s3:::{target_bucket}/*"]},
+         "Action": ["s3:GetObject"],
+         "Resource":[f"arn:aws:s3:::{source_bucket}/*"]},
         {"Effect": "Allow",
-         "Action": ["dynamodb:PutItem","dynamodb:UpdateItem","dynamodb:GetItem"],
-         "Resource": f"arn:aws:dynamodb:{REGION}:{account_id}:table/{DYNAMO_TABLE_NAME}"},
+         "Action":["sns:Publish"],
+         "Resource":[sns_topic_arn]},
         {"Effect": "Allow",
-         "Action": ["sns:Publish"],
-         "Resource": sns_topic_arn},
-        {"Effect": "Allow",
-         "Action": ["ses:SendEmail","ses:SendRawEmail"],
-         "Resource": "*"}
+         "Action":["dynamodb:PutItem"],
+         "Resource":[f"arn:aws:dynamodb:{REGION}:{ACCOUNT_ID}:table/{DYNAMO_TABLE_NAME}"]}
     ]
 }
 iam_client.put_role_policy(RoleName=lambda_role_name, PolicyName=f"{BASE_NAME}-policy", PolicyDocument=json.dumps(inline_policy))
-print("IAM role and policies created.")
+print("IAM role and policies created for Lambda.")
 
 # -----------------------------
-# 7. CREATE LAMBDA PACKAGE
+# 7. Write Lambda code
 # -----------------------------
-print("Packaging Lambda function...")
-package_dir = "lambda_package"
-if os.path.exists(package_dir):
-    shutil.rmtree(package_dir)
-os.makedirs(package_dir)
-
-# Write Lambda function code
-LAMBDA_CODE_FILENAME = os.path.join(package_dir, "lambda_word_analysis.py")
-with open(LAMBDA_CODE_FILENAME, "w") as f:
-    f.write(f"""
+lambda_code = f"""
 import boto3, csv, re
 from io import StringIO, BytesIO
 from collections import Counter
@@ -138,7 +119,6 @@ import os
 TARGET_BUCKET = os.environ['TARGET_BUCKET']
 SNS_TOPIC_ARN = os.environ['SNS_TOPIC_ARN']
 DYNAMO_TABLE = os.environ['DYNAMO_TABLE']
-SUMMARY_EMAIL = os.environ.get('SUMMARY_EMAIL')
 
 s3 = boto3.client('s3')
 sns = boto3.client('sns')
@@ -160,31 +140,34 @@ def analyze_text(text):
 
 def lambda_handler(event, context):
     summary = []
+
     for record in event.get("Records", []):
         src_bucket = record['s3']['bucket']['name']
         key = record['s3']['object']['key']
+
         try:
             obj = s3.get_object(Bucket=src_bucket, Key=key)
             content_bytes = obj['Body'].read()
             file_lower = key.lower()
             analysis_results = []
-            if file_lower.endswith('.csv'):
+
+            if file_lower.endswith(".csv"):
                 content_str = content_bytes.decode('utf-8')
                 sniffer = csv.Sniffer()
                 dialect = sniffer.sniff(content_str[:1024])
                 reader = csv.DictReader(StringIO(content_str), delimiter=dialect.delimiter)
-                for i,row in enumerate(reader):
+                for i, row in enumerate(reader):
                     row_text = ' '.join(row.values())
                     analysis = analyze_text(row_text)
-                    analysis['row_number'] = i+1
-                    table.put_item(Item={{'id': f'{{key}}_row{{i+1}}', **analysis}})
+                    analysis['row_number'] = i + 1
+                    table.put_item(Item={{'id': f"{{key}}_row{{i+1}}", **analysis}})
                     analysis_results.append(f"Row {{i+1}}: {{analysis}}")
-            elif file_lower.endswith('.txt'):
+            elif file_lower.endswith(".txt"):
                 content_str = content_bytes.decode('utf-8')
                 analysis = analyze_text(content_str)
                 table.put_item(Item={{'id': key, **analysis}})
                 analysis_results.append(str(analysis))
-            elif file_lower.endswith('.pdf'):
+            elif file_lower.endswith(".pdf"):
                 reader = PdfReader(BytesIO(content_bytes))
                 text = ""
                 for page in reader.pages:
@@ -194,9 +177,12 @@ def lambda_handler(event, context):
                 analysis_results.append(str(analysis))
             else:
                 analysis_results.append("Skipped unsupported file type.")
+
             summary.append(f"File: {{key}}\\n" + "\\n".join(analysis_results))
+
         except Exception as e:
             summary.append(f"File: {{key}} - Failed: {{e}}")
+
     if summary:
         message = "\\n\\n".join(summary)
         sns.publish(
@@ -204,56 +190,48 @@ def lambda_handler(event, context):
             Subject=f"File Analysis Summary ({{len(event.get('Records', []))}} file(s))",
             Message=message
         )
-        if SUMMARY_EMAIL:
-            ses = boto3.client('ses')
-            ses.send_email(
-                Source=SUMMARY_EMAIL,
-                Destination={{"ToAddresses":[SUMMARY_EMAIL]}},
-                Message={{
-                    "Subject":{{"Data":f"File Analysis Summary ({{len(event.get('Records', []))}} file(s))"}},
-                    "Body":{{"Text":{{"Data":message}}}}
-                }}
-            )
-    return {{'statusCode': 200, 'body': 'Processing complete and summary sent.'}}
-""")
 
-# Install dependencies
+    return {{'statusCode': 200, 'body': 'Processing complete and summary sent.'}}
+"""
+
+with open(LAMBDA_CODE_FILENAME, "w") as f:
+    f.write(lambda_code)
+
+# -----------------------------
+# 8. Package Lambda
+# -----------------------------
+package_dir = "lambda_package"
+if os.path.exists(package_dir): shutil.rmtree(package_dir)
+os.makedirs(package_dir)
+shutil.copy(LAMBDA_CODE_FILENAME, package_dir)
+
+# Install PyPDF2 locally in package_dir
 subprocess.check_call([sys.executable, "-m", "pip", "install", "PyPDF2", "-t", package_dir])
 
-# Create zip
-zip_path = "lambda_word_analysis.zip"
-shutil.make_archive("lambda_word_analysis", 'zip', package_dir)
+zip_path = "lambda_package.zip"
+shutil.make_archive("lambda_package", 'zip', package_dir)
 
 # -----------------------------
-# 8. CREATE LAMBDA FUNCTION
+# 9. Deploy Lambda
 # -----------------------------
-print("Creating Lambda function...")
 with open(zip_path, 'rb') as f:
     zip_bytes = f.read()
 
 lambda_response = lambda_client.create_function(
     FunctionName=lambda_name,
-    Runtime=LAMBDA_RUNTIME,
-    Role=f"arn:aws:iam::{account_id}:role/{lambda_role_name}",
-    Handler=LAMBDA_HANDLER,
+    Runtime="python3.11",
+    Role=f"arn:aws:iam::{ACCOUNT_ID}:role/{lambda_role_name}",
+    Handler=f"{LAMBDA_CODE_FILENAME.rsplit('.',1)[0]}.lambda_handler",
     Code={"ZipFile": zip_bytes},
-    Timeout=300,
-    MemorySize=256,
-    Environment={
-        "Variables":{
-            "TARGET_BUCKET": target_bucket,
-            "SNS_TOPIC_ARN": sns_topic_arn,
-            "DYNAMO_TABLE": DYNAMO_TABLE_NAME,
-            "SUMMARY_EMAIL": summary_email
-        }
-    }
+    Environment={"Variables":{"TARGET_BUCKET":target_bucket,"SNS_TOPIC_ARN":sns_topic_arn,"DYNAMO_TABLE":DYNAMO_TABLE_NAME}}
 )
-lambda_arn = lambda_response['FunctionArn']
-print(f"Lambda function created: {lambda_arn}")
+lambda_arn = lambda_response["FunctionArn"]
+print(f"Lambda function deployed: {lambda_arn}")
 
 # -----------------------------
-# 9. ADD S3 TRIGGER
+# 10. Add S3 permission
 # -----------------------------
+time.sleep(15)
 try:
     lambda_client.add_permission(
         FunctionName=lambda_name,
@@ -262,9 +240,13 @@ try:
         Principal="s3.amazonaws.com",
         SourceArn=f"arn:aws:s3:::{source_bucket}"
     )
+    print("Permission added for S3 to invoke Lambda.")
 except Exception as e:
-    print(f"Lambda S3 permission skipped: {e}")
+    print(f"Permission setup skipped or failed: {e}")
 
+# -----------------------------
+# 11. Add S3 trigger
+# -----------------------------
 notification_configuration = {
     "LambdaFunctionConfigurations":[{"LambdaFunctionArn":lambda_arn,"Events":["s3:ObjectCreated:*"]}]
 }
@@ -272,22 +254,19 @@ s3_client.put_bucket_notification_configuration(
     Bucket=source_bucket,
     NotificationConfiguration=notification_configuration
 )
-print("S3 trigger added to Lambda.")
+print("S3 trigger configured for Lambda.")
 
 # -----------------------------
-# 10. CLEANUP LOCAL FILES
+# 12. Cleanup local files
 # -----------------------------
 shutil.rmtree(package_dir)
 os.remove(zip_path)
-print("Local packaging files cleaned up.")
+os.remove(LAMBDA_CODE_FILENAME)
 
-# -----------------------------
-# DEPLOY COMPLETE
-# -----------------------------
-print("\nDEPLOYMENT COMPLETE!")
-print(f"Source Bucket: {source_bucket}")
-print(f"Target Bucket: {target_bucket}")
-print(f"SNS Topic ARN: {sns_topic_arn}")
-print(f"DynamoDB Table: {DYNAMO_TABLE_NAME}")
-print(f"Lambda ARN: {lambda_arn}")
-print("Please confirm SNS subscriptions and SES verification email for summary email.")
+print("\nDeployment complete!")
+print(f"Source bucket: {source_bucket}")
+print(f"Target bucket: {target_bucket}")
+print(f"SNS topic: {sns_topic_arn}")
+print(f"DynamoDB table: {DYNAMO_TABLE_NAME}")
+print(f"Lambda function ARN: {lambda_arn}")
+print("Please confirm your SNS subscription emails.")
