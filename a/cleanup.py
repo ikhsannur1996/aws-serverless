@@ -1,105 +1,98 @@
 import boto3
-import datetime
-from botocore.exceptions import ClientError
+from datetime import datetime, timezone, timedelta
 
-# -----------------------------
-# Configuration
-# -----------------------------
 REGION = "us-east-1"
-TTL_HOURS = 24
+BASE_NAME = "word-analysis"
 
-# Make cutoff timezone-aware (UTC)
-now = datetime.datetime.now(datetime.timezone.utc)
-cutoff = now - datetime.timedelta(hours=TTL_HOURS)
+s3_client = boto3.client("s3", region_name=REGION)
+sns_client = boto3.client("sns")
+lambda_client = boto3.client("lambda", region_name=REGION)
+iam_client = boto3.client("iam")
+dynamodb_client = boto3.client("dynamodb")
+sts_client = boto3.client("sts")
+account_id = sts_client.get_caller_identity()["Account"]
 
-# AWS clients
-s3 = boto3.client("s3", region_name=REGION)
-lam = boto3.client("lambda", region_name=REGION)
-iam = boto3.client("iam")
-sns = boto3.client("sns")
-sts = boto3.client("sts")
-
-ACCOUNT_ID = sts.get_caller_identity()["Account"]
-print(f"Cleaning up all AWS resources in the last {TTL_HOURS} hours for account {ACCOUNT_ID}\n")
+cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
 
 # -----------------------------
-# 1. Delete Lambda functions
+# 1. Delete Lambda functions created in last 24h
 # -----------------------------
-print("Deleting Lambda functions...")
-for fn in lam.list_functions()["Functions"]:
-    created_str = fn.get("LastModified")  # e.g., '2025-10-17T10:15:30.000+0000'
-    created_dt = datetime.datetime.strptime(created_str.split("+")[0], "%Y-%m-%dT%H:%M:%S.%f")
-    created_dt = created_dt.replace(tzinfo=datetime.timezone.utc)
-    if created_dt >= cutoff:
+print("Checking Lambda functions...")
+for fn in lambda_client.list_functions()['Functions']:
+    created = fn['LastModified']
+    fn_name = fn['FunctionName']
+    # AWS returns string like '2025-10-17T04:15:30.000+0000'
+    created_dt = datetime.strptime(created, "%Y-%m-%dT%H:%M:%S.%f%z")
+    if created_dt >= cutoff and BASE_NAME in fn_name:
+        print(f"Deleting Lambda: {fn_name}")
+        lambda_client.delete_function(FunctionName=fn_name)
+
+# -----------------------------
+# 2. Delete IAM roles created in last 24h
+# -----------------------------
+print("Checking IAM roles...")
+for role in iam_client.list_roles()['Roles']:
+    role_name = role['RoleName']
+    created = role['CreateDate']
+    if created >= cutoff and BASE_NAME in role_name:
+        print(f"Deleting IAM role: {role_name}")
+        # Delete inline policies
+        for pol in iam_client.list_role_policies(RoleName=role_name)['PolicyNames']:
+            iam_client.delete_role_policy(RoleName=role_name, PolicyName=pol)
+        # Detach managed policies
+        for pol in iam_client.list_attached_role_policies(RoleName=role_name)['AttachedPolicies']:
+            iam_client.detach_role_policy(RoleName=role_name, PolicyArn=pol['PolicyArn'])
+        # Delete role
+        iam_client.delete_role(RoleName=role_name)
+
+# -----------------------------
+# 3. Delete S3 buckets created in last 24h
+# -----------------------------
+print("Checking S3 buckets...")
+for bucket in s3_client.list_buckets()['Buckets']:
+    bucket_name = bucket['Name']
+    created = bucket['CreationDate']
+    if created >= cutoff and BASE_NAME in bucket_name:
+        print(f"Deleting S3 bucket: {bucket_name}")
+        # Delete objects (and versions if versioned)
         try:
-            lam.delete_function(FunctionName=fn["FunctionName"])
-            print(f"Deleted Lambda function: {fn['FunctionName']}")
-        except ClientError as e:
-            print(f"Failed to delete Lambda {fn['FunctionName']}: {e}")
+            paginator = s3_client.get_paginator('list_object_versions')
+            for page in paginator.paginate(Bucket=bucket_name):
+                versions = page.get('Versions', []) + page.get('DeleteMarkers', [])
+                for v in versions:
+                    s3_client.delete_object(Bucket=bucket_name, Key=v['Key'], VersionId=v['VersionId'])
+        except s3_client.exceptions.NoSuchBucket:
+            pass
+        # Delete bucket
+        s3_client.delete_bucket(Bucket=bucket_name)
 
 # -----------------------------
-# 2. Delete IAM roles
+# 4. Delete SNS topics created in last 24h
 # -----------------------------
-print("\nDeleting IAM roles...")
-for role in iam.list_roles()["Roles"]:
-    created = role["CreateDate"]  # already timezone-aware
-    if created >= cutoff:
-        try:
-            # Delete inline policies
-            for pol in iam.list_role_policies(RoleName=role["RoleName"])["PolicyNames"]:
-                iam.delete_role_policy(RoleName=role["RoleName"], PolicyName=pol)
-            # Detach managed policies
-            for pol in iam.list_attached_role_policies(RoleName=role["RoleName"])["AttachedPolicies"]:
-                iam.detach_role_policy(RoleName=role["RoleName"], PolicyArn=pol["PolicyArn"])
-            # Delete role
-            iam.delete_role(RoleName=role["RoleName"])
-            print(f"Deleted IAM role: {role['RoleName']}")
-        except ClientError as e:
-            print(f"Failed to delete IAM role {role['RoleName']}: {e}")
-
-# -----------------------------
-# 3. Delete SNS topics and subscriptions
-# -----------------------------
-print("\nDeleting SNS topics and subscriptions...")
-for topic in sns.list_topics()["Topics"]:
-    arn = topic["TopicArn"]
-    try:
-        # Delete all subscriptions
-        subs = sns.list_subscriptions_by_topic(TopicArn=arn)["Subscriptions"]
+print("Checking SNS topics...")
+for topic in sns_client.list_topics()['Topics']:
+    arn = topic['TopicArn']
+    if BASE_NAME in arn:
+        # SNS does not provide creation date, delete anyway if BASE_NAME matches
+        print(f"Deleting SNS topic: {arn}")
+        # Unsubscribe all
+        subs = sns_client.list_subscriptions_by_topic(TopicArn=arn)['Subscriptions']
         for sub in subs:
-            sns.unsubscribe(SubscriptionArn=sub["SubscriptionArn"])
-            print(f"Unsubscribed {sub['Endpoint']} from {arn}")
-        # Delete the topic
-        sns.delete_topic(TopicArn=arn)
-        print(f"Deleted SNS topic: {arn}")
-    except ClientError as e:
-        print(f"Failed to delete SNS topic {arn}: {e}")
+            sns_client.unsubscribe(SubscriptionArn=sub['SubscriptionArn'])
+        sns_client.delete_topic(TopicArn=arn)
 
 # -----------------------------
-# 4. Delete S3 buckets
+# 5. Delete DynamoDB tables created in last 24h
 # -----------------------------
-print("\nDeleting S3 buckets...")
-for bucket in s3.list_buckets()["Buckets"]:
-    created = bucket["CreationDate"]  # timezone-aware
-    if created >= cutoff:
-        try:
-            # Delete all objects (including versions if versioning enabled)
-            try:
-                versioning = s3.get_bucket_versioning(Bucket=bucket["Name"]).get("Status") == "Enabled"
-                if versioning:
-                    versions = s3.list_object_versions(Bucket=bucket["Name"]).get("Versions", [])
-                    for v in versions:
-                        s3.delete_object(Bucket=bucket["Name"], Key=v["Key"], VersionId=v["VersionId"])
-            except ClientError:
-                pass  # no versions
-            # Delete regular objects
-            objs = s3.list_objects_v2(Bucket=bucket["Name"]).get("Contents", [])
-            for obj in objs:
-                s3.delete_object(Bucket=bucket["Name"], Key=obj["Key"])
-            # Delete bucket
-            s3.delete_bucket(Bucket=bucket["Name"])
-            print(f"Deleted S3 bucket: {bucket['Name']}")
-        except ClientError as e:
-            print(f"Failed to delete bucket {bucket['Name']}: {e}")
+print("Checking DynamoDB tables...")
+for table_name in dynamodb_client.list_tables()['TableNames']:
+    if BASE_NAME in table_name:
+        desc = dynamodb_client.describe_table(TableName=table_name)['Table']
+        created = desc['CreationDateTime']
+        if created >= cutoff:
+            print(f"Deleting DynamoDB table: {table_name}")
+            dynamodb_client.delete_table(TableName=table_name)
+            waiter = dynamodb_client.get_waiter('table_not_exists')
+            waiter.wait(TableName=table_name)
 
-print("\nCleanup completed! All resources created in the last 24 hours have been deleted.")
+print("\nCLEANUP COMPLETE: All resources created in last 24 hours have been removed.")
