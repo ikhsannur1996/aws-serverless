@@ -1,10 +1,5 @@
-import boto3
-import os
-import shutil
-import time
-import json
-import csv
-from io import StringIO
+import boto3, os, time, shutil, subprocess, sys, json
+from io import BytesIO
 
 REGION = "us-east-1"
 BASE_NAME = "file_word_analysis"
@@ -113,9 +108,8 @@ print("IAM role and policies created for Lambda.")
 # 7. Write Lambda code
 # -----------------------------
 lambda_code = f"""
-import boto3, os, csv, json
+import boto3, os, csv, json, re, fitz
 from io import StringIO
-import re
 from collections import Counter
 
 TARGET_BUCKET = os.environ['TARGET_BUCKET']
@@ -140,6 +134,13 @@ def analyze_text(text):
         'total_lines': len(lines)
     }}
 
+def extract_pdf_text(pdf_bytes):
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    text = ""
+    for page in doc:
+        text += page.get_text()
+    return text
+
 def lambda_handler(event, context):
     messages = []
 
@@ -150,35 +151,32 @@ def lambda_handler(event, context):
         try:
             obj = s3.get_object(Bucket=src_bucket, Key=key)
             content_bytes = obj['Body'].read()
-            content_str = content_bytes.decode('utf-8')
+            file_lower = key.lower()
 
-            # Detect CSV
-            is_csv = False
-            delimiter = ','
-            try:
+            if file_lower.endswith(".csv"):
+                content_str = content_bytes.decode('utf-8')
                 sniffer = csv.Sniffer()
                 dialect = sniffer.sniff(content_str[:1024])
-                is_csv = True
                 delimiter = dialect.delimiter
-            except csv.Error:
-                is_csv = False
-
-            analysis_results = []
-
-            if is_csv:
                 reader = csv.DictReader(StringIO(content_str), delimiter=delimiter)
                 for i, row in enumerate(reader):
                     row_text = ' '.join(row.values())
                     analysis = analyze_text(row_text)
-                    analysis['row_number'] = i+1
-                    analysis_results.append(analysis)
+                    analysis['row_number'] = i + 1
                     table.put_item(Item={{'id': f"{{key}}_row{{i+1}}", **analysis}})
-            else:
+            elif file_lower.endswith(".txt"):
+                content_str = content_bytes.decode('utf-8')
                 analysis = analyze_text(content_str)
-                analysis_results.append(analysis)
                 table.put_item(Item={{'id': key, **analysis}})
+            elif file_lower.endswith(".pdf"):
+                text = extract_pdf_text(content_bytes)
+                analysis = analyze_text(text)
+                table.put_item(Item={{'id': key, **analysis}})
+            else:
+                messages.append(f"Skipped unsupported file: {{key}}")
+                continue
 
-            messages.append(f"Processed '{{key}}': {{len(analysis_results)}} entries analyzed.")
+            messages.append(f"Processed '{{key}}' successfully.")
 
         except Exception as e:
             messages.append(f"Failed '{{key}}': {{e}}")
@@ -186,7 +184,7 @@ def lambda_handler(event, context):
     if messages:
         sns.publish(
             TopicArn=SNS_TOPIC_ARN,
-            Subject=f"Word Analysis Summary ({{len(messages)}} file(s))",
+            Subject=f"File Analysis Summary ({{len(messages)}} file(s))",
             Message='\\n'.join(messages)
         )
 
@@ -203,6 +201,10 @@ package_dir = "lambda_package"
 if os.path.exists(package_dir): shutil.rmtree(package_dir)
 os.makedirs(package_dir)
 shutil.copy(LAMBDA_CODE_FILENAME, package_dir)
+
+# Install PyMuPDF (fitz) locally in package_dir
+subprocess.check_call([sys.executable, "-m", "pip", "install", "PyMuPDF", "-t", package_dir])
+
 zip_path = "lambda_package.zip"
 shutil.make_archive("lambda_package", 'zip', package_dir)
 
