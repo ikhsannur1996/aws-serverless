@@ -1,7 +1,7 @@
 import boto3, os, time, shutil, subprocess, sys, json
 
 REGION = "us-east-1"
-BASE_NAME = "file-word-analysis"  # use hyphens only for S3 bucket names
+BASE_NAME = "file-word-analysis"
 LAMBDA_CODE_FILENAME = "lambda_word_analysis.py"
 DYNAMO_TABLE_NAME = f"{BASE_NAME}-table"
 
@@ -50,10 +50,8 @@ for bucket in [source_bucket, target_bucket]:
         else:
             s3_client.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
         print(f"Created bucket: {bucket}")
-    except s3_client.exceptions.BucketAlreadyOwnedByYou:
-        print(f"Bucket already owned by you: {bucket}")
-    except s3_client.exceptions.BucketAlreadyExists:
-        print(f"Bucket already exists (globally!): {bucket}")
+    except Exception as e:
+        print(f"Bucket {bucket} creation skipped or failed: {e}")
 
 # -----------------------------
 # 4. Create SNS topic and subscribe emails
@@ -113,9 +111,9 @@ print("IAM role and policies created for Lambda.")
 # -----------------------------
 lambda_code = f"""
 import boto3, csv, re
-from io import StringIO
+from io import StringIO, BytesIO
 from collections import Counter
-from pdfminer.high_level import extract_text
+from PyPDF2 import PdfReader
 import os
 
 TARGET_BUCKET = os.environ['TARGET_BUCKET']
@@ -156,8 +154,7 @@ def lambda_handler(event, context):
                 content_str = content_bytes.decode('utf-8')
                 sniffer = csv.Sniffer()
                 dialect = sniffer.sniff(content_str[:1024])
-                delimiter = dialect.delimiter
-                reader = csv.DictReader(StringIO(content_str), delimiter=delimiter)
+                reader = csv.DictReader(StringIO(content_str), delimiter=dialect.delimiter)
                 for i, row in enumerate(reader):
                     row_text = ' '.join(row.values())
                     analysis = analyze_text(row_text)
@@ -168,7 +165,10 @@ def lambda_handler(event, context):
                 analysis = analyze_text(content_str)
                 table.put_item(Item={{'id': key, **analysis}})
             elif file_lower.endswith(".pdf"):
-                text = extract_text(StringIO(content_bytes.decode('latin1')))
+                reader = PdfReader(BytesIO(content_bytes))
+                text = ""
+                for page in reader.pages:
+                    text += page.extract_text() + "\\n"
                 analysis = analyze_text(text)
                 table.put_item(Item={{'id': key, **analysis}})
             else:
@@ -201,8 +201,8 @@ if os.path.exists(package_dir): shutil.rmtree(package_dir)
 os.makedirs(package_dir)
 shutil.copy(LAMBDA_CODE_FILENAME, package_dir)
 
-# Install pdfminer.six locally in package_dir
-subprocess.check_call([sys.executable, "-m", "pip", "install", "pdfminer.six", "-t", package_dir])
+# Install PyPDF2 locally in package_dir
+subprocess.check_call([sys.executable, "-m", "pip", "install", "PyPDF2", "-t", package_dir])
 
 zip_path = "lambda_package.zip"
 shutil.make_archive("lambda_package", 'zip', package_dir)
@@ -263,5 +263,4 @@ os.remove(LAMBDA_CODE_FILENAME)
 print("\nDeployment complete! Check your SNS emails to confirm subscription.")
 print(f"Source bucket: {source_bucket}")
 print(f"Target bucket: {target_bucket}")
-print(f"DynamoDB table: {DYNAMO_TABLE_NAME}")
-print(f"Lambda function: {lambda_name}")
+print(f"DynamoDB table: {DYNAM
