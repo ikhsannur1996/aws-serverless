@@ -172,6 +172,7 @@ from collections import Counter
 from PyPDF2 import PdfReader
 import os
 
+TARGET_BUCKET = os.environ['TARGET_BUCKET']
 SNS_TOPIC_ARN = os.environ['SNS_TOPIC_ARN']
 DYNAMO_TABLE = os.environ['DYNAMO_TABLE']
 
@@ -181,7 +182,7 @@ dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table(DYNAMO_TABLE)
 
 def analyze_text(text):
-    words = re.findall(r'\\\\b\\\\w+\\\\b', text.lower())
+    words = re.findall(r'\\b\\w+\\b', text.lower())
     total_words = len(words)
     unique_words = len(set(words))
     top_words = Counter(words).most_common(5)
@@ -195,9 +196,11 @@ def analyze_text(text):
 
 def lambda_handler(event, context):
     summary = []
+
     for record in event.get("Records", []):
         src_bucket = record['s3']['bucket']['name']
         key = record['s3']['object']['key']
+
         try:
             obj = s3.get_object(Bucket=src_bucket, Key=key)
             content_bytes = obj['Body'].read()
@@ -206,7 +209,9 @@ def lambda_handler(event, context):
 
             if file_lower.endswith(".csv"):
                 content_str = content_bytes.decode('utf-8')
-                reader = csv.DictReader(StringIO(content_str))
+                sniffer = csv.Sniffer()
+                dialect = sniffer.sniff(content_str[:1024])
+                reader = csv.DictReader(StringIO(content_str), delimiter=dialect.delimiter)
                 for i, row in enumerate(reader):
                     row_text = ' '.join(row.values())
                     analysis = analyze_text(row_text)
@@ -220,25 +225,34 @@ def lambda_handler(event, context):
                 analysis_results.append(str(analysis))
             elif file_lower.endswith(".pdf"):
                 reader = PdfReader(BytesIO(content_bytes))
-                text = "".join([page.extract_text() + "\\n" for page in reader.pages])
+                text = ""
+                for page in reader.pages:
+                    text += page.extract_text() + "\\n"
                 analysis = analyze_text(text)
                 table.put_item(Item={{'id': key, **analysis}})
                 analysis_results.append(str(analysis))
             else:
                 analysis_results.append("Skipped unsupported file type.")
+
             summary.append(f"File: {{key}}\\n" + "\\n".join(analysis_results))
+
         except Exception as e:
             summary.append(f"File: {{key}} - Failed: {{e}}")
+
     if summary:
+        message = "\\n\\n".join(summary)
         sns.publish(
             TopicArn=SNS_TOPIC_ARN,
             Subject=f"File Analysis Summary ({{len(event.get('Records', []))}} file(s))",
-            Message="\\n\\n".join(summary)
+            Message=message
         )
-    return {{'statusCode': 200, 'body': 'Processing complete.'}}
+
+    return {{'statusCode': 200, 'body': 'Processing complete and summary sent.'}}
 """
+
 with open(LAMBDA_CODE_FILENAME, "w") as f:
     f.write(lambda_code)
+    
 log_finish(step, t7, f"Wrote {LAMBDA_CODE_FILENAME}")
 
 # -----------------------------
