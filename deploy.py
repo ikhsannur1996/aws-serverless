@@ -1,114 +1,75 @@
-#!/usr/bin/env python3
-"""
-AWS Deployment Script: File Word Analysis System
-------------------------------------------------
-✅ Creates: Source Bucket, DynamoDB Table, SNS Topic, IAM Role, Lambda, S3 Trigger
-🚫 Skips: Target Bucket
-🕒 Logs: Start / Finish / Duration / Details for every step
-"""
-
 import boto3, os, time, shutil, subprocess, sys, json
-from datetime import datetime, timezone
+from datetime import datetime
 
-# -----------------------------
-# Configurations
-# -----------------------------
+def log_step(message):
+    """Print message with timestamp."""
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}")
+
 REGION = "us-east-1"
 BASE_NAME = "file-word-analysis"
 LAMBDA_CODE_FILENAME = "lambda_word_analysis.py"
 DYNAMO_TABLE_NAME = f"{BASE_NAME}-table"
 
-# -----------------------------
-# Helper Logging Functions
-# -----------------------------
-def now_iso():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-
-def elapsed(start_ts):
-    return f"{(time.time() - start_ts):.2f}s"
-
-def log_start(step):
-    print(f"\n[START] {step}")
-    print(f"  Time : {now_iso()}")
-    return time.time()
-
-def log_finish(step, start_time, detail=""):
-    print(f"[FINISH] {step}")
-    print(f"  Time : {now_iso()}")
-    print(f"  Duration : {elapsed(start_time)}")
-    if detail:
-        print(f"  Detail : {detail}")
-
-# -----------------------------
-# Initialize AWS Clients
-# -----------------------------
-step = "Initialize AWS Clients"
-t0 = log_start(step)
+# AWS clients
 s3_client = boto3.client("s3", region_name=REGION)
 iam_client = boto3.client("iam")
 sns_client = boto3.client("sns")
 lambda_client = boto3.client("lambda", region_name=REGION)
 dynamodb_client = boto3.client("dynamodb", region_name=REGION)
 sts_client = boto3.client("sts")
+
 ACCOUNT_ID = sts_client.get_caller_identity()["Account"]
-log_finish(step, t0, f"AWS Region={REGION}, AccountID={ACCOUNT_ID}")
 
 # -----------------------------
-# 1. Prompt for SNS Subscribers
+# 1. Prompt for SNS subscribers
 # -----------------------------
-step = "Prompt for SNS Subscribers"
-t1 = log_start(step)
+log_step("Starting deployment process...")
 emails_input = input("Enter comma-separated email addresses for notifications: ").strip()
-emails = [e.strip() for e in emails_input.split(",") if e.strip()]
+emails = [email.strip() for email in emails_input.split(",") if email.strip()]
 if not emails:
-    print("❌ No valid emails provided. Exiting.")
-    sys.exit(1)
-log_finish(step, t1, f"Subscribers: {emails}")
+    log_step("No valid emails provided. Exiting.")
+    exit(1)
 
 # -----------------------------
-# 2. Generate Resource Names
+# 2. Generate resource names
 # -----------------------------
-step = "Generate Resource Names"
-t2 = log_start(step)
 timestamp = int(time.time())
 source_bucket = f"{BASE_NAME}-source-{timestamp}"
 sns_topic_name = f"{BASE_NAME}-topic-{timestamp}"
 lambda_name = f"{BASE_NAME}-lambda-{timestamp}"
 lambda_role_name = f"{BASE_NAME}-role-{timestamp}"
-log_finish(step, t2, f"SourceBucket={source_bucket}, SNSTopic={sns_topic_name}, Lambda={lambda_name}, Role={lambda_role_name}")
+
+log_step(f"Source bucket: {source_bucket}")
+log_step(f"DynamoDB table: {DYNAMO_TABLE_NAME}")
+log_step(f"Lambda function: {lambda_name}")
+log_step(f"IAM role: {lambda_role_name}")
 
 # -----------------------------
-# 3. Create Source S3 Bucket
+# 3. Create S3 bucket
 # -----------------------------
-step = "Create Source S3 Bucket"
-t3 = log_start(step)
+log_step("Creating S3 bucket...")
 try:
     if REGION == "us-east-1":
         s3_client.create_bucket(Bucket=source_bucket)
     else:
-        s3_client.create_bucket(
-            Bucket=source_bucket,
-            CreateBucketConfiguration={"LocationConstraint": REGION}
-        )
-    log_finish(step, t3, f"Created bucket {source_bucket}")
+        s3_client.create_bucket(Bucket=source_bucket, CreateBucketConfiguration={"LocationConstraint": REGION})
+    log_step(f"Created bucket: {source_bucket}")
 except Exception as e:
-    log_finish(step, t3, f"⚠️ Bucket creation failed or already exists: {e}")
+    log_step(f"Bucket {source_bucket} creation skipped or failed: {e}")
 
 # -----------------------------
-# 4. Create SNS Topic & Subscribe Emails
+# 4. Create SNS topic and subscribe emails
 # -----------------------------
-step = "Create SNS Topic and Subscriptions"
-t4 = log_start(step)
+log_step("Creating SNS topic and subscribing emails...")
 sns_topic_arn = sns_client.create_topic(Name=sns_topic_name)["TopicArn"]
 for email in emails:
     sns_client.subscribe(TopicArn=sns_topic_arn, Protocol="email", Endpoint=email)
-log_finish(step, t4, f"Created SNS Topic={sns_topic_arn} and sent subscriptions to {emails}")
+log_step("SNS topic created and subscriptions sent.")
 
 # -----------------------------
-# 5. Create DynamoDB Table
+# 5. Create DynamoDB table
 # -----------------------------
-step = "Create DynamoDB Table"
-t5 = log_start(step)
+log_step("Creating DynamoDB table...")
 try:
     dynamodb_client.create_table(
         TableName=DYNAMO_TABLE_NAME,
@@ -116,55 +77,46 @@ try:
         AttributeDefinitions=[{'AttributeName': 'id', 'AttributeType': 'S'}],
         BillingMode='PAY_PER_REQUEST'
     )
-    print("⏳ Waiting for DynamoDB table to be active...")
+    log_step("DynamoDB table creating...")
     waiter = dynamodb_client.get_waiter('table_exists')
     waiter.wait(TableName=DYNAMO_TABLE_NAME)
-    log_finish(step, t5, f"DynamoDB table {DYNAMO_TABLE_NAME} ready.")
+    log_step("DynamoDB table ready.")
 except dynamodb_client.exceptions.ResourceInUseException:
-    log_finish(step, t5, "Table already exists. Skipped creation.")
+    log_step("DynamoDB table already exists, skipping creation.")
 
 # -----------------------------
-# 6. Create IAM Role for Lambda
+# 6. Create IAM role for Lambda
 # -----------------------------
-step = "Create IAM Role and Policies"
-t6 = log_start(step)
+log_step("Creating IAM role and attaching policies for Lambda...")
 trust_policy = {
     "Version": "2012-10-17",
-    "Statement": [{
-        "Effect": "Allow",
-        "Principal": {"Service": "lambda.amazonaws.com"},
-        "Action": "sts:AssumeRole"
-    }]
+    "Statement": [{"Effect": "Allow", "Principal": {"Service": "lambda.amazonaws.com"}, "Action": "sts:AssumeRole"}]
 }
-role = iam_client.create_role(
-    RoleName=lambda_role_name,
-    AssumeRolePolicyDocument=json.dumps(trust_policy)
-)
+role = iam_client.create_role(RoleName=lambda_role_name, AssumeRolePolicyDocument=json.dumps(trust_policy))
 time.sleep(10)
-iam_client.attach_role_policy(
-    RoleName=lambda_role_name,
-    PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-)
+iam_client.attach_role_policy(RoleName=lambda_role_name, PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole")
+
 inline_policy = {
     "Version": "2012-10-17",
     "Statement": [
-        {"Effect": "Allow", "Action": ["s3:GetObject"], "Resource": [f"arn:aws:s3:::{source_bucket}/*"]},
-        {"Effect": "Allow", "Action": ["sns:Publish"], "Resource": [sns_topic_arn]},
-        {"Effect": "Allow", "Action": ["dynamodb:PutItem"], "Resource": [f"arn:aws:dynamodb:{REGION}:{ACCOUNT_ID}:table/{DYNAMO_TABLE_NAME}"]}
+        {"Effect": "Allow",
+         "Action": ["s3:GetObject"],
+         "Resource":[f"arn:aws:s3:::{source_bucket}/*"]},
+        {"Effect": "Allow",
+         "Action":["sns:Publish"],
+         "Resource":[sns_topic_arn]},
+        {"Effect": "Allow",
+         "Action":["dynamodb:PutItem"],
+         "Resource":[f"arn:aws:dynamodb:{REGION}:{ACCOUNT_ID}:table/{DYNAMO_TABLE_NAME}"]}
     ]
 }
-iam_client.put_role_policy(
-    RoleName=lambda_role_name,
-    PolicyName=f"{BASE_NAME}-policy",
-    PolicyDocument=json.dumps(inline_policy)
-)
-log_finish(step, t6, f"IAM Role created: {lambda_role_name}")
+iam_client.put_role_policy(RoleName=lambda_role_name, PolicyName=f"{BASE_NAME}-policy", PolicyDocument=json.dumps(inline_policy))
+log_step("IAM role and policies created for Lambda.")
 
 # -----------------------------
-# 7. Write Lambda Code
+# 7. Write Lambda code
 # -----------------------------
-step = "Write Lambda Code File"
-t7 = log_start(step)
+log_step("Writing Lambda code...")
 lambda_code = f"""
 import boto3, csv, re
 from io import StringIO, BytesIO
@@ -172,7 +124,6 @@ from collections import Counter
 from PyPDF2 import PdfReader
 import os
 
-TARGET_BUCKET = os.environ['TARGET_BUCKET']
 SNS_TOPIC_ARN = os.environ['SNS_TOPIC_ARN']
 DYNAMO_TABLE = os.environ['DYNAMO_TABLE']
 
@@ -252,46 +203,46 @@ def lambda_handler(event, context):
 
 with open(LAMBDA_CODE_FILENAME, "w") as f:
     f.write(lambda_code)
-    
-log_finish(step, t7, f"Wrote {LAMBDA_CODE_FILENAME}")
+log_step("Lambda code file written successfully.")
 
 # -----------------------------
-# 8. Package Lambda Function
+# 8. Package Lambda
 # -----------------------------
-step = "Package Lambda Function"
-t8 = log_start(step)
+log_step("Packaging Lambda function...")
 package_dir = "lambda_package"
 if os.path.exists(package_dir): shutil.rmtree(package_dir)
 os.makedirs(package_dir)
 shutil.copy(LAMBDA_CODE_FILENAME, package_dir)
+
+# Install PyPDF2 locally in package_dir
 subprocess.check_call([sys.executable, "-m", "pip", "install", "PyPDF2", "-t", package_dir])
+
 zip_path = "lambda_package.zip"
 shutil.make_archive("lambda_package", 'zip', package_dir)
-log_finish(step, t8, f"Lambda package ready: {zip_path}")
+log_step("Lambda package created.")
 
 # -----------------------------
 # 9. Deploy Lambda
 # -----------------------------
-step = "Deploy Lambda Function"
-t9 = log_start(step)
+log_step("Deploying Lambda function to AWS...")
 with open(zip_path, 'rb') as f:
     zip_bytes = f.read()
+
 lambda_response = lambda_client.create_function(
     FunctionName=lambda_name,
     Runtime="python3.11",
     Role=f"arn:aws:iam::{ACCOUNT_ID}:role/{lambda_role_name}",
     Handler=f"{LAMBDA_CODE_FILENAME.rsplit('.',1)[0]}.lambda_handler",
     Code={"ZipFile": zip_bytes},
-    Environment={"Variables": {"SNS_TOPIC_ARN": sns_topic_arn, "DYNAMO_TABLE": DYNAMO_TABLE_NAME}}
+    Environment={"Variables":{"SNS_TOPIC_ARN":sns_topic_arn,"DYNAMO_TABLE":DYNAMO_TABLE_NAME}}
 )
 lambda_arn = lambda_response["FunctionArn"]
-log_finish(step, t9, f"Lambda Deployed: {lambda_arn}")
+log_step(f"Lambda function deployed: {lambda_arn}")
 
 # -----------------------------
-# 10. Add Permission for S3 Trigger
+# 10. Add S3 permission
 # -----------------------------
-step = "Add S3 Invoke Permission for Lambda"
-t10 = log_start(step)
+log_step("Adding S3 permission for Lambda invocation...")
 time.sleep(15)
 try:
     lambda_client.add_permission(
@@ -301,42 +252,38 @@ try:
         Principal="s3.amazonaws.com",
         SourceArn=f"arn:aws:s3:::{source_bucket}"
     )
-    log_finish(step, t10, "Permission added successfully.")
+    log_step("Permission added for S3 to invoke Lambda.")
 except Exception as e:
-    log_finish(step, t10, f"Permission setup failed: {e}")
+    log_step(f"Permission setup skipped or failed: {e}")
 
 # -----------------------------
-# 11. Configure S3 Trigger
+# 11. Add S3 trigger
 # -----------------------------
-step = "Configure S3 Trigger for Lambda"
-t11 = log_start(step)
+log_step("Configuring S3 trigger for Lambda...")
 notification_configuration = {
-    "LambdaFunctionConfigurations": [
-        {"LambdaFunctionArn": lambda_arn, "Events": ["s3:ObjectCreated:*"]}
-    ]
+    "LambdaFunctionConfigurations":[{"LambdaFunctionArn":lambda_arn,"Events":["s3:ObjectCreated:*"]}]
 }
 s3_client.put_bucket_notification_configuration(
     Bucket=source_bucket,
     NotificationConfiguration=notification_configuration
 )
-log_finish(step, t11, "S3 trigger configured.")
+log_step("S3 trigger configured for Lambda.")
 
 # -----------------------------
-# 12. Cleanup Local Files
+# 12. Cleanup local files
 # -----------------------------
-step = "Cleanup Local Files"
-t12 = log_start(step)
+log_step("Cleaning up local temporary files...")
 shutil.rmtree(package_dir)
 os.remove(zip_path)
 os.remove(LAMBDA_CODE_FILENAME)
-log_finish(step, t12, "Temporary files deleted.")
+log_step("Local cleanup complete.")
 
 # -----------------------------
-# ✅ Summary
+# Final Summary
 # -----------------------------
-print("\n✅ DEPLOYMENT COMPLETE")
-print(f"Source Bucket : {source_bucket}")
-print(f"SNS Topic ARN : {sns_topic_arn}")
-print(f"DynamoDB Table: {DYNAMO_TABLE_NAME}")
-print(f"Lambda ARN    : {lambda_arn}")
-print("📧 Please confirm your SNS subscription emails.")
+log_step("Deployment complete!")
+print(f"Source bucket: {source_bucket}")
+print(f"SNS topic: {sns_topic_arn}")
+print(f"DynamoDB table: {DYNAMO_TABLE_NAME}")
+print(f"Lambda function ARN: {lambda_arn}")
+print("Please confirm your SNS subscription emails.")
