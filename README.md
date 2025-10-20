@@ -1,49 +1,49 @@
-# 🧠 Simple Word Analysis Serverless App
+# Simple Word Analysis Serverless App
 
-A **fully serverless AWS application** that performs **automatic word analysis** on files uploaded to Amazon S3.  
+This project demonstrates a **fully serverless AWS application** that performs **automatic word analysis** on files uploaded to Amazon S3.  
 When a `.txt`, `.csv`, or `.pdf` file is uploaded, an **AWS Lambda** function is triggered to extract text, calculate word statistics, and store results in **Amazon DynamoDB**.  
-A **summary report** is sent to all **Amazon SNS** email subscribers, and the processed file is archived in a target S3 bucket.
+A **summary report** is then sent to all **Amazon SNS** email subscribers, and the processed file is archived in a target S3 bucket.
 
-All components are deployed and managed automatically via **Python scripts using Boto3**, making this a great reference project for learning AWS automation and serverless architecture.
-
----
-
-## 🧩 Table of Contents
-
-- [Features](#-features)
-- [Architecture Overview](#-architecture-overview)
-- [Detailed Workflow](#-detailed-workflow)
-- [Project Structure](#-project-structure)
-- [AWS Services Used](#-aws-services-used)
-- [Prerequisites](#-prerequisites)
-- [Deployment](#-deployment)
-- [Cleanup](#-cleanup)
-- [Example Workflow](#-example-workflow)
-- [Sample Output](#-sample-output)
-- [Technical Notes](#-technical-notes)
-- [Learning Objectives](#-learning-objectives)
-- [Future Enhancements](#-future-enhancements)
-- [License](#-license)
+All components are deployed and managed automatically using **Python scripts with Boto3**, making this project a practical reference for learning AWS automation and serverless architecture.
 
 ---
 
-## 🚀 Features
+## Table of Contents
 
-✅ **Serverless architecture** built with AWS Lambda and S3 triggers.  
-✅ **Supports multiple file formats**: TXT, CSV, and PDF.  
-✅ **Extracts text and counts word frequencies** automatically.  
-✅ **Stores results** (word counts, file metadata, timestamps) in DynamoDB.  
-✅ **Publishes results** to an SNS topic (email summary).  
-✅ **Auto-archives** processed files to a target S3 bucket.  
-✅ **Automated deployment and teardown** via Python scripts.  
-✅ **Timestamp-based resource naming** to avoid conflicts.  
-✅ **Zero manual AWS Console setup** required.
+- [Features](#features)
+- [Architecture Overview](#architecture-overview)
+- [Detailed Workflow](#detailed-workflow)
+- [Project Structure](#project-structure)
+- [AWS Services Used](#aws-services-used)
+- [Prerequisites](#prerequisites)
+- [Deployment](#deployment)
+- [Cleanup](#cleanup)
+- [Example Workflow](#example-workflow)
+- [Sample Output](#sample-output)
+- [Technical Notes](#technical-notes)
+- [Learning Objectives](#learning-objectives)
+- [Future Enhancements](#future-enhancements)
+- [License](#license)
 
 ---
 
-## 🏗️ Architecture Overview
+## Features
 
-### 📘 High-Level Architecture
+- **Serverless architecture** built using AWS Lambda and S3 triggers.  
+- Supports **TXT**, **CSV**, and **PDF** file formats.  
+- Automatically **extracts text** and **counts word frequencies**.  
+- **Stores analysis results** in DynamoDB.  
+- **Publishes JSON summaries** to an SNS topic (email notifications).  
+- **Archives processed files** in a target S3 bucket.  
+- **Automated deployment and cleanup** using Python and Boto3.  
+- **Timestamp-based resource naming** to avoid name conflicts.  
+- **Zero manual setup** required through the AWS Console.
+
+---
+
+## Architecture Overview
+
+### High-Level Architecture
 
 ```text
                  ┌────────────────────┐
@@ -71,7 +71,7 @@ All components are deployed and managed automatically via **Python scripts using
 └──────────────┘     └──────────────┘         └────────────────┘
 ````
 
-### 🧭 Mermaid Diagram (for GitHub Preview)
+### Mermaid Diagram (for GitHub Preview)
 
 ```mermaid
 flowchart TD
@@ -84,12 +84,12 @@ flowchart TD
 
 ---
 
-## 🔍 Detailed Workflow
+## Detailed Workflow
 
 1. **File Upload**
 
    * A user uploads a text-based file to the **source S3 bucket**.
-   * File types supported: `.txt`, `.csv`, `.pdf`.
+   * Supported file types: `.txt`, `.csv`, `.pdf`.
 
 2. **Event Trigger**
 
@@ -99,30 +99,29 @@ flowchart TD
 
    * The Lambda function:
 
-     * Downloads the uploaded file.
-     * Detects file type and extracts text (PDF/CSV/TXT).
+     * Downloads the file from S3.
+     * Detects file type and extracts text (using appropriate parser).
      * Cleans and tokenizes words.
      * Counts total and unique words.
-     * Calculates the top most frequent words.
+     * Identifies top frequent words.
 
 4. **Data Storage**
 
-   * The processed data is stored in **DynamoDB**:
+   * The processed results are stored in **DynamoDB**, including:
 
      * File name
      * Upload timestamp
-     * Total and unique word count
-     * Top 10 frequent words
+     * Word count summary
      * Processing duration
 
 5. **Notification**
 
-   * A **summary JSON message** is published to an **SNS topic**.
-   * All subscribed email addresses receive a formatted summary.
+   * A JSON-formatted summary is published to an **SNS topic**.
+   * All subscribed email addresses receive the notification.
 
 6. **Archival**
 
-   * The original file is copied to the **target S3 bucket** (for archiving).
+   * The processed file is copied to the **target S3 bucket**.
 
 7. **Cleanup (Optional)**
 
@@ -130,43 +129,40 @@ flowchart TD
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```bash
 .
 ├── deploy.py        # Deploys all AWS resources and Lambda
 ├── cleanup.py       # Removes resources created in the last 24 hours
-├── lambda_function/ # (optional) Lambda code if stored separately
-├── README.md        # Documentation (this file)
+├── lambda_function/ # Optional: Directory for Lambda source code
+├── README.md        # Project documentation
 ```
 
 ---
 
-## ☁️ AWS Services Used
+## AWS Services Used
 
-| AWS Service         | Purpose                                   | Example Resource                                         |
-| ------------------- | ----------------------------------------- | -------------------------------------------------------- |
-| **Amazon S3**       | File storage and event triggering         | `source-bucket-<timestamp>`, `target-bucket-<timestamp>` |
-| **AWS Lambda**      | Executes text extraction and analysis     | `lambda-word-analysis-<timestamp>`                       |
-| **Amazon DynamoDB** | Stores analysis results and metadata      | `WordCountTable-<timestamp>`                             |
-| **Amazon SNS**      | Sends email summaries to subscribers      | `word-analysis-topic-<timestamp>`                        |
-| **AWS IAM**         | Provides roles and permissions for Lambda | `lambda-role-<timestamp>`                                |
+| AWS Service         | Purpose                                         | Example Resource                                          |
+| ------------------- | ----------------------------------------------- | --------------------------------------------------------- |
+| **Amazon S3**       | Stores source and processed files               | `source-bucket-<timestamp>` / `target-bucket-<timestamp>` |
+| **AWS Lambda**      | Executes text extraction and analysis           | `lambda-word-analysis-<timestamp>`                        |
+| **Amazon DynamoDB** | Stores word count results and metadata          | `WordCountTable-<timestamp>`                              |
+| **Amazon SNS**      | Sends email summaries to subscribers            | `word-analysis-topic-<timestamp>`                         |
+| **AWS IAM**         | Provides Lambda execution roles and permissions | `lambda-role-<timestamp>`                                 |
 
 ---
 
-## 🧰 Prerequisites
-
-Before deploying the project, make sure you have:
+## Prerequisites
 
 * **Python 3.x**
-* **AWS CLI** (configured with credentials)
-* **Boto3** installed:
+* **AWS CLI** (configured with valid credentials)
+* **Boto3** library installed:
 
-```bash
-pip install boto3
-```
-
-* AWS account with permission to create:
+  ```bash
+  pip install boto3
+  ```
+* AWS account with permissions to create:
 
   * S3 buckets
   * Lambda functions
@@ -176,28 +172,28 @@ pip install boto3
 
 ---
 
-## ⚙️ Deployment
+## Deployment
 
-### 1️⃣ Run the Deploy Script
+### Step 1: Run the Deployment Script
 
 ```bash
 python deploy.py
 ```
 
-During execution, you’ll be prompted to enter one or more email addresses (comma-separated) for SNS notifications.
+You will be prompted to enter one or more email addresses (comma-separated) to subscribe to the SNS topic.
 
-### 2️⃣ Deployment Actions Performed
+### Step 2: Script Actions
 
-`deploy.py` automatically:
+`deploy.py` performs the following automatically:
 
-1. Creates two **S3 buckets** (source + target) with timestamped names.
-2. Creates an **SNS topic** and subscribes provided email addresses.
-3. Creates an **IAM role** for Lambda with policies for S3, DynamoDB, and SNS.
-4. Creates a **DynamoDB table** for storing word analysis results.
-5. Deploys the **Lambda function** that performs the analysis.
-6. Configures an **S3 → Lambda event trigger**.
+1. Creates timestamped **S3 buckets** (source and target).
+2. Creates an **SNS topic** and subscribes your email addresses.
+3. Creates an **IAM role** for Lambda with S3, DynamoDB, and SNS permissions.
+4. Creates a **DynamoDB table** for storing analysis results.
+5. Deploys the **Lambda function** with analysis logic.
+6. Configures **S3 → Lambda** event trigger.
 
-After successful deployment, the script displays:
+Upon successful completion, the script outputs:
 
 * Source bucket name
 * Target bucket name
@@ -206,43 +202,38 @@ After successful deployment, the script displays:
 
 ---
 
-## 🧹 Cleanup
+## Cleanup
 
-To delete all resources created in the last 24 hours:
+To remove all resources created in the last 24 hours:
 
 ```bash
 python cleanup.py
 ```
 
-This script automatically:
+This script deletes:
 
-* Deletes **Lambda functions** and related IAM roles.
-* Removes **S3 buckets** and their contents.
-* Deletes **SNS topics** and subscriptions.
-* Removes **DynamoDB tables**.
-* Ensures **clean resource teardown** to avoid AWS charges.
+* Lambda functions and IAM roles
+* S3 buckets and their contents
+* SNS topics and subscriptions
+* DynamoDB tables
+
+All deletions are timestamp-filtered to prevent accidental removal of older resources.
 
 ---
 
-## 🧾 Example Workflow
+## Example Workflow
 
 1. Deploy resources:
 
    ```bash
    python deploy.py
    ```
-
-2. Upload a file (e.g., `sample.txt` or `words.csv`) to the **source S3 bucket**.
-
-3. Wait a few seconds — the **Lambda function** runs automatically.
-
-4. Receive an **SNS email notification** containing a summary.
-
-5. View detailed analysis in the **DynamoDB table**.
-
-6. Processed files will appear in the **target S3 bucket**.
-
-7. When done:
+2. Upload a file (e.g., `example.txt` or `example.csv`) to the **source S3 bucket**.
+3. Wait a few seconds for processing to complete.
+4. Receive a **JSON summary email** via SNS.
+5. View detailed results in the **DynamoDB table**.
+6. Access the archived file in the **target S3 bucket**.
+7. When done, run:
 
    ```bash
    python cleanup.py
@@ -250,9 +241,9 @@ This script automatically:
 
 ---
 
-## 🧮 Sample Output (SNS JSON Message)
+## Sample Output (SNS JSON Message)
 
-A typical SNS message (email body) sent after file analysis:
+An example of the JSON payload sent via SNS after successful processing:
 
 ```json
 {
@@ -280,69 +271,69 @@ A typical SNS message (email body) sent after file analysis:
 
 ---
 
-## 🧠 Technical Notes
+## Technical Notes
 
-* **Text Extraction**:
+* **Text Extraction:**
 
-  * `.txt` → Direct read.
-  * `.csv` → Concatenates all text columns.
-  * `.pdf` → Uses PyPDF2 for text extraction.
+  * `.txt`: Read directly from file.
+  * `.csv`: Concatenate all text-based columns.
+  * `.pdf`: Extract text using PyPDF2 or similar libraries.
 
-* **Performance**:
+* **Performance:**
 
-  * Lambda timeout: ~30s.
-  * Memory: 256–512 MB (configurable).
-  * Suitable for small to medium files (<5 MB).
+  * Lambda timeout: up to 30 seconds.
+  * Memory: 256–512 MB.
+  * Suitable for small-to-medium text files (<5 MB).
 
-* **Data Storage Format**:
+* **Data Storage Format:**
 
-  * DynamoDB uses file name as primary key.
-  * Stores total counts, word frequencies (as a map), and timestamp.
+  * DynamoDB uses `file_name` as primary key.
+  * Stores total word count, unique word count, top frequent words, and timestamp.
 
-* **Security**:
+* **Security:**
 
-  * IAM role follows least-privilege principle.
+  * IAM roles follow least-privilege principles.
   * SNS subscribers must confirm via email before receiving messages.
 
-* **Extensibility**:
+* **Extensibility:**
 
-  * Easily extendable to include:
+  * Can be extended to integrate:
 
-    * Sentiment Analysis (via Amazon Comprehend)
-    * Translation (via Amazon Translate)
-    * Entity Recognition or Language Detection
-
----
-
-## 🎯 Learning Objectives
-
-This project helps you learn:
-
-* How to build **event-driven serverless pipelines** on AWS.
-* How to automate infrastructure using **Boto3**.
-* How to integrate **S3, Lambda, DynamoDB, and SNS**.
-* How to handle text extraction and simple NLP logic in AWS Lambda.
-* How to manage **resource lifecycle** (creation → processing → deletion).
+    * AWS Comprehend for NLP
+    * AWS Translate for multilingual support
+    * Step Functions for multi-stage workflows
 
 ---
 
-## 🔮 Future Enhancements
+## Learning Objectives
 
-* Add **CloudWatch dashboards** for real-time monitoring.
-* Integrate **AWS Step Functions** for multi-stage workflows.
-* Use **AWS Comprehend** for advanced NLP tasks.
-* Add **API Gateway endpoint** for manual word analysis submission.
-* Store detailed logs in **S3 or CloudWatch Logs** for auditability.
+This project demonstrates how to:
+
+* Build **event-driven serverless applications** using AWS.
+* Automate **resource provisioning** and **teardown** with Boto3.
+* Integrate **S3, Lambda, DynamoDB, and SNS** for data pipelines.
+* Implement **text extraction and word frequency analysis** in a serverless context.
+* Design for **cost efficiency** and **scalability** in AWS.
 
 ---
 
-## 🪪 License
+## Future Enhancements
+
+* Add CloudWatch dashboards for monitoring performance metrics.
+* Integrate Step Functions for orchestration of complex workflows.
+* Use AWS Comprehend for sentiment or entity analysis.
+* Expose Lambda through API Gateway for on-demand text analysis.
+* Log all activities to CloudWatch for audit and debugging.
+
+---
+
+## License
 
 This project is licensed under the **MIT License**.
 You are free to use, modify, and distribute it for educational and personal projects.
 
 ---
 
-**Author:** *Mohamad Ikhsan Nurulloh*
-**Created For:** *Educational demonstration of AWS Serverless automation using Python (Boto3)*
-**Last Updated:** *October 2025*
+**Author:** Mohamad Ikhsan Nurulloh
+**Purpose:** Educational demonstration of AWS Serverless automation using Python and Boto3
+**Last Updated:** October 2025
