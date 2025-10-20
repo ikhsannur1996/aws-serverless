@@ -7,7 +7,7 @@ This project demonstrates a **serverless AWS application** to perform **basic wo
 ## Features
 
 * **Serverless architecture** using AWS Lambda.
-* Detects **CSV** and **TXT** files in S3.
+* Detects **PDF**, **CSV** and **TXT** files in S3.
 * Performs **simple word count analysis**.
 * Stores results in **DynamoDB**.
 * Sends **summary email** via SNS.
