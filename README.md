@@ -46,29 +46,29 @@ All components are deployed and managed automatically using **Python scripts wit
 ### High-Level Architecture
 
 ```text
-                 ┌────────────────────┐
+                 ┌─────────────────────┐
                  │    User Uploads     │
                  │ (TXT, CSV, or PDF)  │
                  └──────────┬──────────┘
                             │
                             ▼
-                   ┌────────────────┐
+                   ┌─────────────────┐
                    │  S3 Source      │
                    │   Bucket        │
                    └──────┬──────────┘
                           │ (Event Trigger)
                           ▼
-                   ┌───────────────────────┐
+                   ┌────────────────────────┐
                    │     AWS Lambda         │
                    │ (Word Analysis Logic)  │
                    └────────┬───────────────┘
                             │
        ┌────────────────────┼────────────────────────┐
-       ▼                    ▼                        ▼
-┌──────────────┐     ┌──────────────┐         ┌────────────────┐
-│  DynamoDB    │     │   SNS Topic  │         │   S3 Target     │
-│ Word Counts  │     │ Email Alerts │         │ (Processed Files│
-└──────────────┘     └──────────────┘         └────────────────┘
+       ▼                                             ▼
+┌──────────────┐                              ┌────────────────┐
+│  DynamoDB    │                              │   SNS Topic    │
+│ Word Counts  │                              │ Email Alerts   │
+└──────────────┘                              └────────────────┘
 ````
 
 ### Mermaid Diagram (for GitHub Preview)
@@ -79,7 +79,6 @@ flowchart TD
     B -->|Event Trigger| C[AWS Lambda Function]
     C --> D[DynamoDB Table - Word Results]
     C --> E[SNS Topic - Email Summary]
-    C --> F[S3 Target Bucket - Processed Files]
 ```
 
 ---
@@ -119,11 +118,8 @@ flowchart TD
    * A JSON-formatted summary is published to an **SNS topic**.
    * All subscribed email addresses receive the notification.
 
-6. **Archival**
 
-   * The processed file is copied to the **target S3 bucket**.
-
-7. **Cleanup (Optional)**
+6. **Cleanup (Optional)**
 
    * Run `cleanup.py` to delete all AWS resources created within the last 24 hours.
 
@@ -145,7 +141,7 @@ flowchart TD
 
 | AWS Service         | Purpose                                         | Example Resource                                          |
 | ------------------- | ----------------------------------------------- | --------------------------------------------------------- |
-| **Amazon S3**       | Stores source and processed files               | `source-bucket-<timestamp>` / `target-bucket-<timestamp>` |
+| **Amazon S3**       | Stores source                                   | `source-bucket-<timestamp>`                               |
 | **AWS Lambda**      | Executes text extraction and analysis           | `lambda-word-analysis-<timestamp>`                        |
 | **Amazon DynamoDB** | Stores word count results and metadata          | `WordCountTable-<timestamp>`                              |
 | **Amazon SNS**      | Sends email summaries to subscribers            | `word-analysis-topic-<timestamp>`                         |
@@ -232,8 +228,7 @@ All deletions are timestamp-filtered to prevent accidental removal of older reso
 3. Wait a few seconds for processing to complete.
 4. Receive a **JSON summary email** via SNS.
 5. View detailed results in the **DynamoDB table**.
-6. Access the archived file in the **target S3 bucket**.
-7. When done, run:
+6. When done, run:
 
    ```bash
    python cleanup.py
